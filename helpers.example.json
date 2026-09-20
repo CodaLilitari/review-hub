@@ -1,0 +1,14 @@
+{
+  "claude": {
+    "path": "C:/path/to/reviewed/helpers/claude_check.py",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "model": "REPLACE_WITH_VERIFIED_SUBSCRIPTION_MODEL",
+    "effort": "REPLACE_WITH_SUPPORTED_EFFORT"
+  },
+  "grok": {
+    "path": "C:/path/to/reviewed/helpers/grok_check.py",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "model": "REPLACE_WITH_VERIFIED_SUBSCRIPTION_MODEL",
+    "effort": "REPLACE_WITH_SUPPORTED_EFFORT"
+  }
+}

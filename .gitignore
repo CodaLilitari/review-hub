@@ -1,0 +1,47 @@
+# Local account, identity, helper, and secret configuration
+helpers.local.json
+helpers.json
+identity.seed.json
+identity.json
+.env
+.env.*
+*.env
+secrets/
+secrets.*
+credentials/
+credentials.*
+.private/
+
+# Runtime state, evidence, requests, responses, and attachments
+state/
+.test-state/
+artifacts/
+evidence/
+jobs/
+sessions/
+logs/
+output/
+outputs/
+screenshots/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+
+# Python environments, generated metadata, and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
