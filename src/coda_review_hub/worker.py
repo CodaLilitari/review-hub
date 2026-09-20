@@ -137,8 +137,15 @@ def run_job(hub: Hub, job_id: str):
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             except (ValueError, UnicodeError):
                 pass
-        attempted = metadata.get("sent", metadata.get("submission_attempted"))
-        contradiction = any(metadata.get(key) not in allowed for key, allowed in {
+        delivery_fields = [metadata[key] for key in ("sent", "submission_attempted")
+                           if metadata.get(key) is not None]
+        attempted = next((value for value in delivery_fields if type(value) is bool), None)
+        claims_completion = (metadata.get("status") == "completed"
+                             and metadata.get("model_review_completed") is True)
+        delivery_contradiction = (any(type(value) is not bool for value in delivery_fields)
+                                  or (True in delivery_fields and False in delivery_fields)
+                                  or (claims_completion and False in delivery_fields))
+        contradiction = delivery_contradiction or any(metadata.get(key) not in allowed for key, allowed in {
             "response_stop_reason": (None, "end_turn", "stop_sequence"),
             "response_finish_reason": (None, "stop", "end_turn", "stop_sequence"),
             "response_terminal_reason": (None, "completed", "success", "end_turn", "stop_sequence"),
@@ -153,6 +160,8 @@ def run_job(hub: Hub, job_id: str):
             successful = False
         if successful:
             state, submission = "returned", "completed_response_received"
+        elif delivery_contradiction:
+            state, submission = "delivery_unknown", "conflicting_helper_submission_receipt"
         elif attempted is False:
             state, submission = "blocked", "not_sent_by_helper"
         elif not stop and (contradiction or metadata.get("status") in {"review_failed", "response_received_unverified"}):
@@ -172,6 +181,7 @@ def run_job(hub: Hub, job_id: str):
                         helper_exit_code=process.returncode, helper_status=metadata.get("status", "missing_receipt"),
                         verified_response_models=models, local_stop_reason=stop,
                         contradictory_completion_fields=contradiction,
+                        contradictory_submission_fields=delivery_contradiction,
                         provider_session_id=metadata.get("session_id"),
                         error=None if successful else "Inspect the local helper receipt before retrying; no automatic retry was made",
                         answer_available=bool(answer.strip()),
@@ -207,7 +217,7 @@ def main():
                 row = c.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
                 hub._update(c, row, state="blocked", submission="not_started", error="Could not establish Windows descendant lifetime containment")
         return 1
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
         list(pool.map(lambda job: run_job(hub, job), jobs))
     # Keep the lifetime Job Object handle alive through every completed receipt.
     _ = lifetime_job

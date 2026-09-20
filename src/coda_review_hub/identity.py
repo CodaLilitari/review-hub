@@ -12,8 +12,12 @@ import uuid
 
 PROVIDERS = frozenset({
     "claude", "grok", "chatgpt", "gemini", "claude-cowork", "grok-bot",
-    "microsoft-copilot", "github-copilot",
+    "microsoft-copilot", "github-copilot", "gemini-cli", "gemini-desktop",
+    "gemini-spark", "meta-ai", "meta-muse",
 })
+# These names were valid user aliases before the additional routes existed.
+# Only reads of older profiles may preserve their former (old-route) targets.
+ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse"})
 FIELDS = frozenset({"agent_name", "user_name", "collaborators", "aliases", "context_notes", "evidence"})
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 CONFIGURE_MESSAGE = (
@@ -31,7 +35,7 @@ def _text(value, label: str, maximum: int, *, minimum: int = 0, multiline: bool 
     return value.strip()
 
 
-def _mapping(value, label: str) -> dict[str, str]:
+def _mapping(value, label: str, *, allow_legacy_aliases: bool = False) -> dict[str, str]:
     if value is None:
         return {}
     if not isinstance(value, dict) or len(value) > 16 or any(not isinstance(key, str) for key in value):
@@ -39,7 +43,9 @@ def _mapping(value, label: str) -> dict[str, str]:
     result = {}
     for key, item in value.items():
         if label == "aliases":
-            if not IDENTIFIER.fullmatch(key) or key in PROVIDERS:
+            legacy = (allow_legacy_aliases and key in ADDED_PROVIDERS
+                      and isinstance(item, str) and item in PROVIDERS - ADDED_PROVIDERS)
+            if not IDENTIFIER.fullmatch(key) or (key in PROVIDERS and not legacy):
                 raise ValueError("Aliases must be lowercase identifiers and cannot replace canonical provider names")
             if not isinstance(item, str) or item not in PROVIDERS:
                 raise ValueError("Each alias must point directly to a supported canonical provider")
@@ -52,14 +58,14 @@ def _mapping(value, label: str) -> dict[str, str]:
     return result
 
 
-def _normalize(payload: dict) -> dict:
+def _normalize(payload: dict, *, allow_legacy_aliases: bool = False) -> dict:
     if not isinstance(payload, dict) or payload.keys() - FIELDS or "evidence" not in payload:
         raise ValueError("Identity configuration requires evidence and accepts only names, collaborators, aliases, and context_notes")
     return {
         "agent_name": _text(payload.get("agent_name", ""), "agent_name", 128),
         "user_name": _text(payload.get("user_name", ""), "user_name", 128),
         "collaborators": _mapping(payload.get("collaborators"), "collaborators"),
-        "aliases": _mapping(payload.get("aliases"), "aliases"),
+        "aliases": _mapping(payload.get("aliases"), "aliases", allow_legacy_aliases=allow_legacy_aliases),
         "context_notes": _mapping(payload.get("context_notes"), "context_notes"),
         "evidence": _text(payload["evidence"], "evidence", 4000, minimum=12, multiline=True),
     }
@@ -103,8 +109,15 @@ class IdentityStore:
                 raise ValueError()
         except (KeyError, TypeError, ValueError):
             raise ValueError("Stored identity profile needs a timezone-qualified configured_at timestamp") from None
-        values = _normalize({key: record[key] for key in FIELDS if key in record})
-        return {"configured": True, **values, "configured_at": configured_at.isoformat()}
+        values = _normalize({key: record[key] for key in FIELDS if key in record}, allow_legacy_aliases=True)
+        result = {"configured": True, **values, "configured_at": configured_at.isoformat()}
+        conflicts = {alias: {"previous_target": target, "canonical_provider": alias}
+                     for alias, target in values["aliases"].items() if alias in PROVIDERS}
+        if conflicts:
+            # Surface the preserved mapping without rewriting user choices or
+            # silently promoting a former app alias into an automated route.
+            result["alias_conflicts"] = conflicts
+        return result
 
     def configure(self, *, evidence: str, agent_name: str = "", user_name: str = "",
                   collaborators: dict[str, str] | None = None, aliases: dict[str, str] | None = None,
@@ -129,6 +142,10 @@ class IdentityStore:
         record = self.read()
         if not record["configured"]:
             raise ValueError(CONFIGURE_MESSAGE)
+        if record.get("alias_conflicts"):
+            raise ValueError("Saved aliases conflict with newly supported provider names; inspect "
+                             "identity_status.alias_conflicts and explicitly configure_identity to resolve "
+                             "them before outbound work")
         return record
 
     def greeting(self) -> str:
@@ -142,10 +159,18 @@ class IdentityStore:
     def resolve_provider(self, alias: str) -> str:
         if not isinstance(alias, str):
             raise ValueError("provider must be a canonical name or configured alias")
-        provider = self.read()["aliases"].get(alias, alias)
+        record = self.read()
+        if alias in record.get("alias_conflicts", {}):
+            raise ValueError("This saved alias conflicts with a new canonical provider; inspect "
+                             "identity_status.alias_conflicts and explicitly configure_identity before use")
+        provider = record["aliases"].get(alias, alias)
         if provider not in PROVIDERS:
             raise ValueError("Unknown provider or alias; check identity_status and the supported routes")
         return provider
 
     def note(self, provider: str) -> str:
-        return self.read()["context_notes"].get(self.resolve_provider(provider), "")
+        record = self.read()
+        # Route inventory reads canonical notes even while a naming conflict
+        # blocks outbound work; it must not route through the old alias.
+        canonical = provider if provider in PROVIDERS else self.resolve_provider(provider)
+        return record["context_notes"].get(canonical, "")

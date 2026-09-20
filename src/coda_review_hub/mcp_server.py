@@ -12,7 +12,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
 from . import __version__
-from .core import Hub
+from .core import AUTO, Hub
 from .worker import contain_worker
 
 
@@ -43,7 +43,7 @@ class ReviewRequest(BaseModel):
     """A text review with fixed provider model and effort settings."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    provider: Literal["claude", "grok"]
+    provider: Literal["claude", "grok", "gemini-cli"]
     prompt: str
     timeout: Annotated[int, Field(ge=1, le=3600)] = 900
     attachments: AttachmentPaths = Field(default_factory=list)
@@ -132,7 +132,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
     @server.tool(annotations=local_write, structured_output=True)
     def observe_usage(
-        provider: Literal["claude", "grok"],
+        provider: Literal["claude", "grok", "gemini-cli"],
         project: str,
         observed_at: str,
         evidence: str,
@@ -156,7 +156,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
     ))
     def submit(
         project: str,
-        requests: Annotated[list[ReviewRequest], Field(min_length=1, max_length=2)],
+        requests: Annotated[list[ReviewRequest], Field(min_length=1, max_length=len(AUTO))],
         idempotency_key: str,
     ) -> dict[str, Any]:
         """Queue scoped text reviews and immediately return batch/job IDs.
@@ -223,6 +223,9 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         and attribution, identify the configured coordinator, and thank the collaborator. Never invent a conversation.
         Optional attachments are at most 16 exact absolute project-file paths, snapshotted locally.
         Reverify them with attachment_files before an app upload; staging does not establish receipt.
+        Follow the returned route instructions: verify Gemini model and thinking per conversation;
+        Spark/Muse backend identity is unverified. Meta Thinking is an exposed mode, not a universal
+        ranking. Consumer access does not establish CLI entitlement or authorize broader access.
         """
         return call(hub.handoff, project, provider, prompt, conversation_ref, attachments=attachments)
 
@@ -238,6 +241,8 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         attachment_evidence: str = "",
         returned_files: AttachmentPaths | None = None,
         artifact_evidence: str = "",
+        observed_model: Annotated[StrictStr, Field(max_length=256)] = "",
+        observed_mode: Annotated[StrictStr, Field(max_length=256)] = "",
     ) -> dict[str, Any]:
         """Record coordinator-observed app output for a previously prepared handoff.
 
@@ -248,11 +253,14 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         If the prepared input includes attachments, supply their exact observed IDs and actual
         attachment evidence. Optional returned_files are at most 16 exact project-local downloaded
         files; supply actual artifact evidence. The hub snapshots them without downloading itself.
+        Optional observed_model and observed_mode preserve visible conversation labels as
+        coordinator testimony only. They do not verify exact backend identity or model capability.
         """
         return call(
             hub.record_handoff_result, project, job_id, response, evidence, conversation_ref, acknowledgment,
             observed_attachment_ids=observed_attachment_ids, attachment_evidence=attachment_evidence,
             returned_files=returned_files, artifact_evidence=artifact_evidence,
+            observed_model=observed_model, observed_mode=observed_mode,
         )
 
     return server

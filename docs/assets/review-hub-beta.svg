@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1500" viewBox="0 0 1200 1500" role="img" aria-labelledby="title description">
+  <title id="title">Review Hub — Beta: bounded reviews, traceable inputs and checked findings</title>
+  <desc id="description">A five-step project review workflow with implemented MCP, CLI and app-handoff paths distinguished from experimental, initialize-only ACP probes. GitHub currently requires sign-in to view.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#6de2ed"/><stop offset="1" stop-color="#b1a1ff"/></linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#6de2ed"/></marker>
+    <style>
+      text { font-family: 'Segoe UI', Arial, sans-serif; fill: #f2eee5; }
+      .label { font-size: 17px; font-weight: 600; letter-spacing: 2.3px; }
+      .muted { fill: #aab9c8; }
+      .cyan { fill: #6de2ed; }
+      .violet { fill: #b1a1ff; }
+      .step-title { font-size: 31px; font-weight: 600; }
+      .step-description { font-size: 23px; fill: #c0cbd5; }
+      .feature-title { font-size: 22px; font-weight: 600; }
+      .feature-description { font-size: 20px; fill: #aab9c8; }
+      .route-title { font-size: 28px; font-weight: 600; }
+      .route-description { font-size: 23px; fill: #c0cbd5; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1500" fill="#080c13"/>
+  <rect x="72" y="53" width="58" height="4" rx="2" fill="url(#accent)"/>
+  <text class="label muted" x="146" y="62">A LOCAL TOOL FOR BOUNDED AI REVIEWS</text>
+  <text x="68" y="171" font-size="90" font-weight="700" letter-spacing="-3">Review Hub</text>
+  <rect x="948" y="102" width="180" height="66" rx="12" fill="#b1a1ff"/>
+  <text x="1038" y="145" text-anchor="middle" fill="#080c13" style="fill:#080c13" font-size="31" font-weight="700" letter-spacing="4">BETA</text>
+  <text x="72" y="229" font-size="34" font-weight="600">MCP + CLI coordinator</text>
+  <text class="muted" x="72" y="273" font-size="26">Scoped work. Traceable inputs. Checked findings.</text>
+  <rect x="72" y="308" width="1056" height="2" fill="url(#accent)"/>
+
+  <text class="label cyan" x="72" y="348">THE REVIEW WORKFLOW</text>
+  <text class="label muted" x="845" y="348">BUILT AROUND</text>
+
+  <!-- Solid connectors mark the implemented review workflow. -->
+  <g fill="none" stroke="#6de2ed" stroke-width="2.5" marker-end="url(#arrow)">
+    <path d="M101 425 V456"/>
+    <path d="M101 531 V562"/>
+    <path d="M101 637 V668"/>
+    <path d="M101 743 V774"/>
+  </g>
+
+  <circle cx="101" cy="400" r="27" fill="#12303a" stroke="#6de2ed" stroke-width="1.5"/>
+  <text x="101" y="408" text-anchor="middle" font-size="23" font-weight="600" class="cyan">01</text>
+  <text class="step-title" x="155" y="402">Scope a project</text>
+  <text class="step-description" x="155" y="439">Define the question and authorized work.</text>
+
+  <circle cx="101" cy="506" r="27" fill="#12303a" stroke="#6de2ed" stroke-width="1.5"/>
+  <text x="101" y="514" text-anchor="middle" font-size="23" font-weight="600" class="cyan">02</text>
+  <text class="step-title" x="155" y="508">Select exact inputs</text>
+  <text class="step-description" x="155" y="545">Snapshot files and record their hashes.</text>
+
+  <circle cx="101" cy="612" r="27" fill="#12303a" stroke="#6de2ed" stroke-width="1.5"/>
+  <text x="101" y="620" text-anchor="middle" font-size="23" font-weight="600" class="cyan">03</text>
+  <text class="step-title" x="155" y="614">Dispatch / review</text>
+  <text class="step-description" x="155" y="651">Use configured helpers or app handoffs.</text>
+
+  <circle cx="101" cy="718" r="27" fill="#12303a" stroke="#6de2ed" stroke-width="1.5"/>
+  <text x="101" y="726" text-anchor="middle" font-size="23" font-weight="600" class="cyan">04</text>
+  <text class="step-title" x="155" y="720">Capture responses</text>
+  <text class="step-description" x="155" y="757">Keep replies, artifacts and project records.</text>
+
+  <circle cx="101" cy="824" r="27" fill="#12303a" stroke="#6de2ed" stroke-width="1.5"/>
+  <text x="101" y="832" text-anchor="middle" font-size="23" font-weight="600" class="cyan">05</text>
+  <text class="step-title" x="155" y="826">Verify &amp; synthesize</text>
+  <text class="step-description" x="155" y="863">Check findings before accepting them.</text>
+
+  <path d="M797 374 V886" stroke="#263442" stroke-width="1"/>
+  <rect x="829" y="374" width="299" height="115" rx="12" fill="#101823"/>
+  <text class="feature-title" x="851" y="410">Subscription-first</text>
+  <text class="feature-description" x="851" y="441">Configured helpers;</text>
+  <text class="feature-description" x="851" y="467">current usage checks.</text>
+
+  <rect x="829" y="506" width="299" height="115" rx="12" fill="#101823"/>
+  <text class="feature-title" x="851" y="542">Exact-file evidence</text>
+  <text class="feature-description" x="851" y="573">Hashes and snapshots</text>
+  <text class="feature-description" x="851" y="599">of selected inputs.</text>
+
+  <rect x="829" y="638" width="299" height="115" rx="12" fill="#101823"/>
+  <text class="feature-title" x="851" y="674">User-chosen names</text>
+  <text class="feature-description" x="851" y="705">Your collaborators,</text>
+  <text class="feature-description" x="851" y="731">or neutral labels.</text>
+
+  <rect x="829" y="770" width="299" height="115" rx="12" fill="#101823"/>
+  <text class="feature-title" x="851" y="806">Project records</text>
+  <text class="feature-description" x="851" y="837">Traceable jobs, responses</text>
+  <text class="feature-description" x="851" y="863">and artifacts.</text>
+
+  <path d="M72 931 H119" stroke="#6de2ed" stroke-width="3"/>
+  <text class="label cyan" x="136" y="937">IMPLEMENTED · SOLID LINES</text>
+  <text class="label muted" x="1128" y="937" text-anchor="end">MCP / CLI / APP HANDOFFS</text>
+
+  <rect x="72" y="965" width="514" height="162" rx="16" fill="#0d1b23" stroke="#6de2ed" stroke-width="1.5"/>
+  <text class="route-title" x="98" y="1007">Configured CLI helpers</text>
+  <text class="route-description" x="98" y="1047">Bounded text reviews through</text>
+  <text class="route-description" x="98" y="1080">locally reviewed provider helpers.</text>
+  <rect x="614" y="965" width="514" height="162" rx="16" fill="#0d1b23" stroke="#6de2ed" stroke-width="1.5"/>
+  <text class="route-title" x="640" y="1007">App handoffs</text>
+  <text class="route-description" x="640" y="1047">Stage a packet and record a reply.</text>
+  <text class="route-description" x="640" y="1080">A coordinator operates the app.</text>
+
+  <!-- Dashed outline is deliberately reserved for experimental ACP. -->
+  <rect x="72" y="1160" width="1056" height="158" rx="16" fill="#141322" stroke="#b1a1ff" stroke-width="1.5" stroke-dasharray="9 7"/>
+  <text class="label violet" x="98" y="1198">ACP · EXPERIMENTAL</text>
+  <text x="98" y="1240" font-size="29" font-weight="600">Initialize-only capability probes.</text>
+  <text class="muted" x="98" y="1281" font-size="24">No authenticated ACP sessions or automatic all-app control.</text>
+
+  <text class="muted" x="72" y="1364" font-size="23">Beta: route setup and provider availability vary.</text>
+  <text x="72" y="1413" font-size="27" font-weight="600">GitHub currently requires sign-in to view</text>
+  <text class="cyan" x="72" y="1453" font-size="26">github.com/CodaLilitari/review-hub</text>
+</svg>

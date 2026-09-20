@@ -1,14 +1,20 @@
-# Review Hub
+# Review Hub (beta)
 
 A local MCP server and CLI for coordinating bounded AI reviews, tracking exact inputs, and collecting responses. The Python package remains `coda_review_hub`; that is project branding, not an identity assigned to the user or their assistants.
 
 The coordinator chooses relevant reviewers and verifies consequential findings. The hub supplies job records, parallel dispatch, duplicate prevention, attachment snapshots, cancellation, and app handoffs. It does not turn a review into authority to execute changes.
 
+[![Review Hub beta: scope a project, select exact inputs, dispatch reviews, capture responses, verify and synthesize. MCP and CLI are implemented; ACP initialization is experimental. GitHub currently requires sign-in to view.](docs/assets/review-hub-beta.png)](docs/assets/review-hub-beta.svg)
+
+[Public case study and text explanation](https://richard-pemberton-research.darkahn.chatgpt.site/projects/review-hub/index.html) · [Editable SVG](docs/assets/review-hub-beta.svg)
+
 ## Maturity and scope
 
-This is an early, Windows-first implementation with synthetic test fixtures. It is not a turnkey installer for provider products, a billing service, or a universally authenticated multi-agent framework. Other platforms need separate validation.
+**v0.3 is beta software:** an early, Windows-first implementation with synthetic test fixtures. It is not a turnkey installer for provider products, a billing service, or a universally authenticated multi-agent framework. Other platforms need separate validation.
 
-Two automated provider slots, `claude` and `grok`, can use **locally supplied, reviewed subscription helpers**. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
+**Repository access (2026-09-20):** GitHub currently requires sign-in to view this repository. Its public visibility setting does not establish anonymous access.
+
+Three automated provider slots, `claude`, `grok` and `gemini-cli`, can use **locally supplied, reviewed subscription helpers**. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
 
 The current transport is local stdio MCP plus CLI wrappers. ACP session management, provider-session resume, autonomous project editing, automatic image generation, and a persistent background service are outside the implemented scope. Provider capability is distinct from hub integration.
 
@@ -25,7 +31,13 @@ py -3 -m venv .venv
 
 The command entry points are `coda-review` and `coda-review-mcp`. Register the latter, or the environment's Python executable with `-m coda_review_hub.mcp_server`, with an MCP client that supports local stdio servers. Choose one private state directory outside the repository and use it consistently across clients. No HTTP listener is started.
 
-The repository ships `helpers.example.json`, not personal helper implementations or account configuration. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified hashes and supported model/effort settings. Read the [adapter contract](docs/adapter-contract.md) before enabling one.
+The repository ships `helpers.example.json` and a generic guarded Gemini CLI helper; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified hashes and supported model/effort settings. Read the [adapter contract](docs/adapter-contract.md) before enabling one.
+
+## Gemini and Meta extension (v0.3)
+
+Distinct app handoffs are available for `gemini-desktop`, `gemini-spark`, `meta-ai` and `meta-muse`, alongside the existing Gemini browser route. Exact attachment snapshots and returned artifacts use the same checks. App receipts can preserve observed model/mode labels without claiming a verified backend identity.
+
+The included Gemini helper targets official CLI 0.60.0 with separate Google OAuth sign-in, pinned runtime bytes, paid overage disabled and a text-only packet. A development probe completed ACP `initialize` using an empty unauthenticated home. That proves protocol initialization only; authenticated ACP sessions and live Gemini reviews remain unverified. See [Gemini/Meta setup and boundaries](docs/gemini-meta-v0.3.md).
 
 ## Identities belong to the user
 
@@ -49,7 +61,7 @@ An explicit anonymous choice is supported. It allows neutral introductions witho
 | `handoff` | Prepare a scoped app packet and optional file snapshots. |
 | `record_handoff_result` | Record a reply, attachment observation, and optional returned files. |
 
-Inspect the current tool schemas or CLI help for argument details. A batch accepts at most one request per automated provider, allowing the two providers to run concurrently. Active jobs for the same provider are serialized across projects sharing the state directory.
+Inspect the current tool schemas or CLI help for argument details. A batch accepts at most one request per automated provider, allowing up to three providers to run concurrently. Active jobs for the same provider are serialized across projects sharing the state directory.
 
 ## Subscription checks and delivery
 
@@ -77,3 +89,5 @@ Project binding prevents accidental cross-project retrieval. It is not isolation
 Tests use synthetic inputs and local fake helpers; they do not establish live provider authentication or entitlement. Run relevant checks after changing a helper, transport, identity setup, or attachment handling.
 
 License information is pending the repository owner's choice.
+
+Current public-checkout validation: [v0.3 beta validation record](docs/validation-v0.3-2026-09-20.md), with 101 offline tests passing.

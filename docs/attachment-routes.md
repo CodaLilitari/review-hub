@@ -18,6 +18,8 @@ This is not a native file upload. Binary images and PDFs are refused on the auto
 
 Grok has a specific preprocessing concern: published [prompt-parser source](https://github.com/xai-org/grok-build/blob/4247f661689354b831191f11eeeac8424993fe3d/crates/codegen/xai-grok-shell/src/session/prompt_parser.rs) expands literal `@file` references before model tool permissions. `--verbatim` alone does not stop that source path. Text packets containing an at-sign are encoded with literal Unicode escapes and retained as `.txt`; original snapshots remain separate. The [headless parser](https://github.com/xai-org/grok-build/blob/4247f661689354b831191f11eeeac8424993fe3d/crates/codegen/xai-grok-pager/src/headless/cli.rs) treats `.txt` as text. Changing it to `.json` or `--prompt-json` would decode escapes before collection and requires a new safety review. This source-based guard is not proof of every behavior of every provider version.
 
+Gemini CLI also preprocesses literal `@file` references before normal tool policy. Its text helper JSON-encodes the full request with literal Unicode escapes for every at-sign, retaining original and transmitted hashes. See [Gemini CLI restrictions](gemini-meta-v0.3.md#restrictions-and-evidence). This is embedded source text, not native image or file transport.
+
 ## Native app handoffs
 
 1. Call `handoff` with the selected files and the appropriate project conversation reference when known. It stages snapshots and a packet; `sent:false` means no upload occurred.

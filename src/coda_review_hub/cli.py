@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "record-handoff-result":
             value = hub.record_handoff_result(**_payload(args.jsonfile, {
                 "project", "job_id", "response", "evidence", "conversation_ref",
-            }, {"acknowledgment", "observed_attachment_ids", "attachment_evidence", "returned_files", "artifact_evidence"}))
+            }, {"acknowledgment", "observed_attachment_ids", "attachment_evidence", "returned_files", "artifact_evidence", "observed_model", "observed_mode"}))
         else:
             value = hub.handoff(**_payload(args.jsonfile, {"project", "provider", "prompt"}, {"conversation_ref", "attachments"}))
     except (ValueError, TypeError, OSError) as exc:
