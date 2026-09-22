@@ -11,10 +11,10 @@
     "model": "REPLACE_WITH_VERIFIED_SUBSCRIPTION_MODEL",
     "effort": "REPLACE_WITH_SUPPORTED_EFFORT"
   },
-  "gemini-cli": {
-    "path": "C:/path/to/review-hub/scripts/gemini_check.py",
+  "antigravity": {
+    "path": "C:/path/to/review-hub/scripts/antigravity_check.py",
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "model": "gemini-3.1-pro-preview",
+    "model": "gemini-3.8-flash-high",
     "effort": "high"
   }
 }

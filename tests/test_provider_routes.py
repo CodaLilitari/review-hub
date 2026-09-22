@@ -1,6 +1,7 @@
 """Offline v0.3 route contracts; synthetic helpers and app observations only."""
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -25,8 +26,8 @@ class ProviderRouteTests(unittest.TestCase):
     def test_route_catalog_preserves_gemini_and_separates_cli_entitlement(self):
         listing = self.hub.routes()
         routes = {route["provider"]: route for route in listing["routes"]}
-        self.assertEqual(set(routes), core.AUTO | set(core.HANDOFF))
-        self.assertEqual(listing["route_counts"], {"automated": 3, "coordinator_handoff": 10})
+        self.assertEqual(set(routes), core.AUTO | set(core.RETIRED) | set(core.HANDOFF))
+        self.assertEqual(listing["route_counts"], {"automated": 3, "coordinator_handoff": 10, "retired": 1})
         self.assertIn("3 automated", listing["limits"])
         for provider in NEW_HANDOFFS | {"gemini"}:
             with self.subTest(provider=provider):
@@ -39,7 +40,7 @@ class ProviderRouteTests(unittest.TestCase):
             self.assertIn("exact backend is unverified", routes[provider]["instructions"])
             self.assertIn("authorized packet", routes[provider]["instructions"])
         self.assertIn("not a universal model ranking", routes["meta-ai"]["instructions"])
-        cli = routes["gemini-cli"]
+        cli = routes["antigravity"]
         self.assertEqual(cli["transport"], "cli")
         self.assertFalse(cli["helper_verified"])
         self.assertIsNone(cli["model"])
@@ -47,24 +48,24 @@ class ProviderRouteTests(unittest.TestCase):
         self.assertIn("reviewed local helper", cli["next"])
         self.assertIn("consumer app access does not establish", cli["entitlement"])
 
-    def test_gemini_cli_without_reviewed_pin_is_blocked_before_launch(self):
-        self.observe("gemini-cli")
+    def test_antigravity_without_reviewed_pin_is_blocked_before_launch(self):
+        self.observe("antigravity")
         with self.assertRaisesRegex(ValueError, "reviewed local helper configuration"):
-            self.hub.submit(str(self.project), [{"provider": "gemini-cli", "prompt": "Offline only."}], "no-helper")
+            self.hub.submit(str(self.project), [{"provider": "antigravity", "prompt": "Offline only."}], "no-helper")
         self.launch.assert_not_called()
         self.assertEqual(self.hub.jobs(str(self.project)), [])
 
-    def test_gemini_cli_quotes_file_mentions_and_preserves_exact_input(self):
-        self.pins["gemini-cli"] = dict(self.pins["grok"], model="fixture-gemini")
+    def test_antigravity_quotes_file_mentions_and_preserves_exact_input(self):
+        self.pins["antigravity"] = dict(self.pins["grok"], model="fixture-antigravity")
         self.write_pins()
-        self.observe("gemini-cli")
+        self.observe("antigravity")
         source = self.project / "source.py"
         source_bytes = b"@decorator\ndef fixture():\n    return 'reader@example.invalid'\n"
         source.write_bytes(source_bytes)
         prompt = "/do-not-run @outside.txt is quoted review input, not permission to read it."
         job = self.hub.submit(str(self.project), [{
-            "provider": "gemini-cli", "prompt": prompt, "attachments": [str(source)],
-        }], "quoted-gemini-input")["jobs"][0]
+            "provider": "antigravity", "prompt": prompt, "attachments": [str(source)],
+        }], "quoted-antigravity-input")["jobs"][0]
         directory = Path(job["evidence_directory"])
         packet = (directory / "packet.txt").read_text(encoding="utf-8")
         self.assertNotIn("@", packet)
@@ -149,7 +150,7 @@ class ProviderRouteTests(unittest.TestCase):
 '''
         self.fake.write_text(test_core.FAKE_HELPER.replace('    if "MODE:CHILD" in packet:',
                                                          barrier + '    if "MODE:CHILD" in packet:'), encoding="utf-8")
-        self.pins["gemini-cli"] = {"path": str(self.fake), "model": "fixture-gemini", "effort": "fixture-high"}
+        self.pins["antigravity"] = {"path": str(self.fake), "model": "fixture-antigravity", "effort": "fixture-high"}
         for pin in self.pins.values():
             pin["sha256"] = core.digest(self.fake.read_bytes())
         self.write_pins()
@@ -192,8 +193,8 @@ class ProviderInterfaceTests(unittest.IsolatedAsyncioTestCase):
             tools = {tool.name: tool.model_dump(by_alias=True) for tool in (await client.list_tools()).tools}
             schema = tools["submit"]["inputSchema"]
             self.assertEqual(schema["properties"]["requests"]["maxItems"], 3)
-            self.assertEqual(set(schema["$defs"]["ReviewRequest"]["properties"]["provider"]["enum"]), core.AUTO)
-            self.assertEqual(set(tools["observe_usage"]["inputSchema"]["properties"]["provider"]["enum"]), core.AUTO)
+            self.assertEqual(set(schema["$defs"]["ReviewRequest"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED))
+            self.assertEqual(set(tools["observe_usage"]["inputSchema"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED))
             receipt = tools["record_handoff_result"]["inputSchema"]
             for field in ("observed_model", "observed_mode"):
                 self.assertEqual(receipt["properties"][field]["type"], "string")
@@ -206,6 +207,23 @@ class ProviderInterfaceTests(unittest.IsolatedAsyncioTestCase):
                     })
                     self.assertTrue(result.is_error)
                     self.assertNotIn("Job not found", str(result.content))
+
+    async def test_mcp_retired_cli_reports_migration_error_and_creates_no_jobs(self):
+        async with Client(self.params, read_timeout_seconds=15) as client:
+            observed = await client.call_tool("observe_usage", {
+                "provider": "gemini-cli", "project": str(self.project),
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "evidence": "Synthetic old personal subscription observation.",
+                "included_available": True, "paid_usage_disabled": True,
+            })
+            submitted = await client.call_tool("submit", {
+                "project": str(self.project), "requests": [{"provider": "gemini-cli", "prompt": "Offline only."}],
+                "idempotency_key": "retired-cli-fixture",
+            })
+            for result in (observed, submitted):
+                self.assertTrue(result.is_error)
+                self.assertIn("personal-subscription Gemini CLI helper is retired", str(result.content))
+            self.assertEqual(core.Hub(self.root / "state").jobs(str(self.project)), [])
 
     async def test_mcp_new_handoff_attachment_and_mode_receipt(self):
         attachment = self.project / "fixture.bin"

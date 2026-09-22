@@ -1,3 +1,5 @@
+> Historical v0.3 notes: the personal Gemini CLI route and its script entry points are retired in v0.4. Use the separate Antigravity adapter described in [the migration guide](antigravity-v0.4.md). Existing profiles and results are preserved.
+
 # Gemini and Meta routes in v0.3 beta
 
 Review Hub v0.3 adds one automated text-checker slot (`gemini-cli`) and four distinct app routes (`gemini-desktop`, `gemini-spark`, `meta-ai`, `meta-muse`). The existing `gemini` browser handoff remains compatible. All eleven MCP tools and their CLI equivalents remain available. A batch can contain up to three distinct automated providers: Claude, Grok and Gemini CLI.

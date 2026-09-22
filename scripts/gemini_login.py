@@ -28,4 +28,4 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("Retired personal-subscription route. Use configure_antigravity.py and antigravity_check.py; existing Gemini history and profiles are preserved.")

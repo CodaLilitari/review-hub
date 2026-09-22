@@ -1,3 +1,3 @@
 """Local coordination for bounded reviews through existing subscription routes."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

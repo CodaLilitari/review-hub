@@ -13,11 +13,17 @@ import uuid
 PROVIDERS = frozenset({
     "claude", "grok", "chatgpt", "gemini", "claude-cowork", "grok-bot",
     "microsoft-copilot", "github-copilot", "gemini-cli", "gemini-desktop",
-    "gemini-spark", "meta-ai", "meta-muse",
+    "gemini-spark", "meta-ai", "meta-muse", "antigravity",
 })
 # These names were valid user aliases before the additional routes existed.
 # Only reads of older profiles may preserve their former (old-route) targets.
-ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse"})
+ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse", "antigravity"})
+# Antigravity was introduced after the v0.3 routes. A pre-existing alias with
+# this name may legitimately point to any earlier route, including Gemini CLI.
+LEGACY_ALIAS_TARGETS = {
+    name: (PROVIDERS - {"antigravity"} if name == "antigravity" else PROVIDERS - ADDED_PROVIDERS)
+    for name in ADDED_PROVIDERS
+}
 FIELDS = frozenset({"agent_name", "user_name", "collaborators", "aliases", "context_notes", "evidence"})
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 CONFIGURE_MESSAGE = (
@@ -44,7 +50,7 @@ def _mapping(value, label: str, *, allow_legacy_aliases: bool = False) -> dict[s
     for key, item in value.items():
         if label == "aliases":
             legacy = (allow_legacy_aliases and key in ADDED_PROVIDERS
-                      and isinstance(item, str) and item in PROVIDERS - ADDED_PROVIDERS)
+                      and isinstance(item, str) and item in LEGACY_ALIAS_TARGETS[key])
             if not IDENTIFIER.fullmatch(key) or (key in PROVIDERS and not legacy):
                 raise ValueError("Aliases must be lowercase identifiers and cannot replace canonical provider names")
             if not isinstance(item, str) or item not in PROVIDERS:

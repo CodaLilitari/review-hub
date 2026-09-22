@@ -10,11 +10,11 @@ The coordinator chooses relevant reviewers and verifies consequential findings. 
 
 ## Maturity and scope
 
-**v0.3 is beta software:** an early, Windows-first implementation with synthetic test fixtures. It is not a turnkey installer for provider products, a billing service, or a universally authenticated multi-agent framework. Other platforms need separate validation.
+**v0.4 is beta software:** an early, Windows-first implementation with synthetic test fixtures. It is not a turnkey installer for provider products, a billing service, or a universally authenticated multi-agent framework. Other platforms need separate validation.
 
 **Repository access (2026-09-20):** GitHub currently requires sign-in to view this repository. Its public visibility setting does not establish anonymous access.
 
-Three automated provider slots, `claude`, `grok` and `gemini-cli`, can use **locally supplied, reviewed subscription helpers**. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
+Three automated provider slots, `claude`, `grok` and `antigravity`, can use **locally supplied, reviewed subscription helpers**. The former `gemini-cli` route is retired; historical records remain readable. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
 
 The current transport is local stdio MCP plus CLI wrappers. ACP session management, provider-session resume, autonomous project editing, automatic image generation, and a persistent background service are outside the implemented scope. Provider capability is distinct from hub integration.
 
@@ -31,13 +31,21 @@ py -3 -m venv .venv
 
 The command entry points are `coda-review` and `coda-review-mcp`. Register the latter, or the environment's Python executable with `-m coda_review_hub.mcp_server`, with an MCP client that supports local stdio servers. Choose one private state directory outside the repository and use it consistently across clients. No HTTP listener is started.
 
-The repository ships `helpers.example.json` and a generic guarded Gemini CLI helper; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified hashes and supported model/effort settings. Read the [adapter contract](docs/adapter-contract.md) before enabling one.
+The repository ships `helpers.example.json` and an Antigravity helper under validation; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified hashes and supported model/effort settings. The example's zero hashes are placeholders, not usable pins. Read the [adapter contract](docs/adapter-contract.md) and [Antigravity setup and boundaries](docs/antigravity-v0.4.md) before enabling a helper.
 
-## Gemini and Meta extension (v0.3)
+## Antigravity replacement (v0.4)
+
+Antigravity has its own `antigravity` provider ID. The upgrade does not redirect old Gemini requests, reuse their entitlement observations, or reinterpret their saved replies. Review the new helper and runtime, verify the current account's included usage and disabled paid fallback, then create a separate helper pin and usage observation. The retired Gemini helper is retained for historical reference; it is not an active dispatch route.
+
+A development diagnostic using the official Antigravity CLI 1.2.7 returned a nonsensitive synthetic response with `gemini-3.8-flash-high` selected and no observed tool calls. A live review through the guarded Review Hub helper is recorded in the [v0.4 validation record](docs/validation-v0.4-2026-09-22.md) once it has run. A successful diagnostic does not establish tool isolation, safe handling of private packets, or a verified backend model identity. The example uses `gemini-3.8-flash-high` with `high` effort; verify catalog availability and entitlement on the account used for deployment.
+
+The integration wraps the CLI through the hub's existing local MCP interface. It implements no Antigravity ACP sessions. Earlier ACP initialization experiments remain historical protocol probes. See [Antigravity migration, subscription checks, and validation boundaries](docs/antigravity-v0.4.md).
+
+## Gemini and Meta app handoffs
 
 Distinct app handoffs are available for `gemini-desktop`, `gemini-spark`, `meta-ai` and `meta-muse`, alongside the existing Gemini browser route. Exact attachment snapshots and returned artifacts use the same checks. App receipts can preserve observed model/mode labels without claiming a verified backend identity.
 
-The included Gemini helper targets official CLI 0.60.0 with separate Google OAuth sign-in, pinned runtime bytes, paid overage disabled and a text-only packet. A development probe completed ACP `initialize` using an empty unauthenticated home. That proves protocol initialization only; authenticated ACP sessions and live Gemini reviews remain unverified. See [Gemini/Meta setup and boundaries](docs/gemini-meta-v0.3.md).
+These app handoffs are distinct from the Antigravity automated route. They preserve project scope and observed app receipts; they do not prove desktop control, authenticated ACP sessions, or automatic uploads. The [Gemini/Meta v0.3 notes](docs/gemini-meta-v0.3.md) remain historical context, including the retired Gemini CLI experiment. Use the v0.4 Antigravity documentation for current automated setup.
 
 ## Identities belong to the user
 
@@ -90,4 +98,4 @@ Tests use synthetic inputs and local fake helpers; they do not establish live pr
 
 License information is pending the repository owner's choice.
 
-Current public-checkout validation: [v0.3 beta validation record](docs/validation-v0.3-2026-09-20.md), with 101 offline tests passing.
+Current checkpoint: the [v0.4 validation record](docs/validation-v0.4-2026-09-22.md). The [v0.3 beta validation record](docs/validation-v0.3-2026-09-20.md) covers the earlier release and does not establish v0.4 validation. Setup steps and remaining checks are in the [Antigravity notes](docs/antigravity-v0.4.md).

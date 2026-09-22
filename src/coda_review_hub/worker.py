@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from .core import Hub, ACTIVE, atomic_json, digest, encoded, now
+from .core import Hub, ACTIVE, RETIRED, atomic_json, digest, encoded, now
 from .attachments import verify_files, manifest_digest
 
 
@@ -59,6 +59,16 @@ def load_helper(path):
     return module
 
 
+def model_labels(value):
+    """Keep bounded labels as reported, without inferring backend identity."""
+    if (not isinstance(value, list) or len(value) > 32
+            or any(not isinstance(item, str) or not 1 <= len(item) <= 256
+                   or not item.strip() or any(ord(char) < 32 or ord(char) == 127 for char in item)
+                   for item in value)):
+        return []
+    return list(value)
+
+
 def run_job(hub: Hub, job_id: str):
     process = None
     data = None
@@ -72,6 +82,10 @@ def run_job(hub: Hub, job_id: str):
                 hub._update(c, row, state="cancelled", finished_at=now(), submission="not_started")
                 return
             data = json.loads(row["data"])
+            if data["provider"] in RETIRED:
+                hub._update(c, row, state="blocked", submission="not_started", finished_at=now(),
+                            error=RETIRED[data["provider"]])
+                return
             observation = c.execute(
                 "SELECT revoked,expires FROM observations WHERE id=? AND provider=? AND project=?",
                 (data["observation_id"], data["provider"], data["project"]),
@@ -172,14 +186,21 @@ def run_job(hub: Hub, job_id: str):
         # private on disk and is never included in normal tool responses.
         if answer:
             (directory / "answer.txt").write_text(answer, encoding="utf-8")
-        models = metadata.get("verified_response_models", [])
-        if not isinstance(models, list):
-            models = []
+        models = model_labels(metadata.get("verified_response_models", []))
+        # CLI initialization can expose the selected model without attesting to
+        # the response backend. Preserve that weaker evidence separately; it
+        # neither populates verified models nor changes completion/delivery.
+        observed_models = model_labels(metadata.get("observed_cli_models", []))
+        model_evidence = metadata.get("model_evidence", "")
+        if (not isinstance(model_evidence, str) or len(model_evidence) > 4096
+                or any((ord(char) < 32 and char not in "\n\r\t") or ord(char) == 127 for char in model_evidence)):
+            model_evidence = ""
         with hub.connect() as c:
             row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             hub._update(c, row, state=state, submission=submission, finished_at=now(),
                         helper_exit_code=process.returncode, helper_status=metadata.get("status", "missing_receipt"),
                         verified_response_models=models, local_stop_reason=stop,
+                        observed_cli_models=observed_models, model_evidence=model_evidence,
                         contradictory_completion_fields=contradiction,
                         contradictory_submission_fields=delivery_contradiction,
                         provider_session_id=metadata.get("session_id"),

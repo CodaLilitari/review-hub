@@ -43,7 +43,9 @@ class ReviewRequest(BaseModel):
     """A text review with fixed provider model and effort settings."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    provider: Literal["claude", "grok", "gemini-cli"]
+    # Retired IDs reach core only to return a specific migration error; they
+    # are never eligible for a new usage allowance or provider launch.
+    provider: Literal["claude", "grok", "antigravity", "gemini-cli"]
     prompt: str
     timeout: Annotated[int, Field(ge=1, le=3600)] = 900
     attachments: AttachmentPaths = Field(default_factory=list)
@@ -69,7 +71,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
             "every task everywhere. Disclose only the minimum information justified by the task "
             "and named provider; exclude credentials, confidential material, and unrelated history "
             "absent separate scope and authorization. Usage observations are coordinator attestations "
-            "from recent actual usage UI, not provider-verified output. New sends need available "
+            "from recent actual usage UI or non-generating CLI reports, not provider-verified output. New sends need available "
             "included usage, disabled paid usage, and a recorded source. Never invent an observation "
             "or use API billing as fallback. submit returns job IDs without waiting for completion; "
             "keep this MCP connection alive through completion because running workers share its lifetime. "
@@ -132,7 +134,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
     @server.tool(annotations=local_write, structured_output=True)
     def observe_usage(
-        provider: Literal["claude", "grok", "gemini-cli"],
+        provider: Literal["claude", "grok", "antigravity", "gemini-cli"],
         project: str,
         observed_at: str,
         evidence: str,
@@ -140,10 +142,12 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         paid_usage_disabled: StrictBool,
         max_jobs: Annotated[int, Field(ge=1, le=4, strict=True)] = 1,
     ) -> dict[str, Any]:
-        """Record a coordinator attestation from a recent actual usage UI, with its source.
+        """Record a coordinator attestation from a recent usage UI or non-generating CLI report, with its source.
 
         This is not a provider quota query or independent verification. Attest only what was
         actually observed, using a timestamp with timezone. Do not include account secrets.
+        Enabled automated routes are claude, grok, and antigravity. gemini-cli is retained
+        in the schema solely to return an explicit retirement error, not to record new usage.
         A new send requires available included usage and disabled paid usage. max_jobs bounds
         how many dispatches may rely on this observation; it does not create provider quota.
         """
@@ -163,6 +167,8 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
         This sends the supplied prompts to selected providers after core preflight, using each
         route's configured and pinned model/effort. No arbitrary commands, models, or paid API fallback.
+        Enabled routes are claude, grok, and antigravity. Retired gemini-cli requests are rejected;
+        their existing records remain readable through jobs/result and are never redirected.
         Recent sourced usage attestations with included capacity and paid usage disabled are
         required. Reuse the idempotency key for the same logical request, then inspect jobs/results
         instead of duplicating a potentially delivered prompt. Model replies are not verified facts.

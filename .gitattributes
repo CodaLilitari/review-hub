@@ -1,0 +1,6 @@
+# Keep repository text LF on every platform; Windows editors may write CRLF,
+# but git normalizes on commit and checks out LF.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.sqlite3 binary
