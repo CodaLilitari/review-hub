@@ -6,9 +6,10 @@ This release removes the deprecated personal Gemini CLI implementation, separate
 
 Final Windows validation:
 
-- Private suite: **207 tests passed** in 59.053 seconds.
-- Public suite: **207 tests passed** in 59.054 seconds.
+- Private suite: **213 tests passed** in 57.581 seconds.
+- Public suite: **213 tests passed** in 57.379 seconds.
 - Newly launched registered MCP server: **v0.5.0, fifteen tools**, all three configured helper-source hashes matched; no provider request was sent by that installation check.
+- Claude billing regressions verify that Fable family choices, credit-required entries and indirect aliases are excluded, and that direct model selection cannot bypass the filtered catalog. No live model request was sent for these checks.
 - Editable installation metadata reports **0.5.0**; dependency checks passed.
 - Private/public production modules and generic helper bytes matched. Public privacy scan and tracked-app/installer checks passed.
 - Portfolio build, three rendered-page checks, and lint passed. Portfolio version 27 was published successfully.

@@ -56,6 +56,50 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         models = helper.normalize_catalog({"models": [{"value": "new", "displayName": "New"}]})
         self.assertEqual(models[0]["efforts"], ["default"])
 
+    def test_catalog_excludes_fable_family_versions_and_resolved_aliases(self):
+        payload = self.payload()
+        ids = ("fable", "fable[1m]", "claude-fable-future", "CLAUDE-FABLE-99[1m]")
+        payload["models"].extend({"value": ident, "displayName": "Fixture"} for ident in ids)
+        payload["models"].append({"value": "top", "displayName": "Top", "resolvedModel": "claude-fable-future"})
+        excluded = []
+        models = helper.normalize_catalog(payload, excluded)
+        self.assertEqual({entry["id"] for entry in models}, {"opus", "simple"})
+        self.assertEqual({entry["id"] for entry in excluded}, {*ids, "top"})
+        self.assertTrue(all("usage credits" in entry["reason"] for entry in excluded))
+
+    def test_best_alias_requires_concrete_non_fable_resolution(self):
+        for resolved in (None, "best", "opus", "claude-best", "claude-fable-future"):
+            payload = self.payload()
+            entry = {"value": "best[1m]", "displayName": "Best"}
+            if resolved is not None:
+                entry["resolvedModel"] = resolved
+            payload["models"].append(entry)
+            with self.subTest(resolved=resolved):
+                self.assertNotIn("best[1m]", {model["id"] for model in helper.normalize_catalog(payload)})
+        payload["models"][-1]["resolvedModel"] = "claude-opus-future"
+        self.assertIn("best[1m]", {model["id"] for model in helper.normalize_catalog(payload)})
+
+    def test_explicit_credit_requirement_and_indirect_alias_are_excluded(self):
+        payload = self.payload()
+        payload["models"] += [
+            {"value": "credit-tier", "displayName": "Future model", "description": "Requires usage credits"},
+            {"value": "indirect", "displayName": "Indirect", "resolvedModel": "credit-tier"},
+            {"value": "chain", "displayName": "Chain", "resolvedModel": "indirect"},
+        ]
+        excluded = []
+        models = helper.normalize_catalog(payload, excluded)
+        self.assertEqual({entry["id"] for entry in models}, {"opus", "simple"})
+        self.assertEqual({entry["id"] for entry in excluded}, {"credit-tier", "indirect", "chain"})
+
+    def test_fable_comparison_is_not_a_family_identity_or_new_version_gate(self):
+        payload = {"models": [{"value": "claude-opus-future", "displayName": "Opus future",
+                               "description": "Compared with Fable in a benchmark", "futureField": True}]}
+        self.assertEqual(helper.normalize_catalog(payload)[0]["id"], "claude-opus-future")
+
+    def test_all_excluded_catalog_fails_before_selection(self):
+        with self.assertRaisesRegex(ValueError, "no-extra-charges"):
+            helper.normalize_catalog({"models": [{"value": "fable", "displayName": "Fable"}]})
+
     def test_catalog_rejects_duplicate_selection(self):
         payload = self.payload()
         payload["models"].append(payload["models"][0].copy())
@@ -189,6 +233,8 @@ class ClaudeCodeHelperTests(unittest.TestCase):
     def test_discovery_returns_no_raw_account_data(self):
         payload = self.payload()
         payload["account"] = {"email": "private@example.invalid", "organization": "private-org"}
+        payload["models"].append({"value": "fable", "displayName": "Fable",
+                                  "description": "private-description-never-retain"})
         checks = {"runtime_version": "future", "runtime_provenance": {"sha256": "fixture"},
                   "auth": {"loggedIn": True, "authMethod": "claude.ai"}}
         with patch.object(helper, "runtime_preflight", return_value=checks), patch.object(helper, "initialize_metadata", return_value=payload), patch.object(helper, "check_runtime_update", return_value={"status": "unavailable"}):
@@ -196,8 +242,11 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         text = json.dumps(catalog)
         self.assertNotIn("private@example", text)
         self.assertNotIn("private-org", text)
+        self.assertNotIn("private-description", text)
         self.assertIsInstance(catalog["evidence"], str)
         self.assertFalse(catalog["discovery_details"]["user_prompt_sent"])
+        self.assertEqual(catalog["discovery_details"]["excluded_models"][0]["id"], "fable")
+        self.assertIn("Excluded 1", catalog["evidence"])
 
     def test_result_metadata_does_not_claim_backend_attestation(self):
         text, receipt = helper.capture_response({"type": "result", "subtype": "success", "is_error": False,
@@ -239,6 +288,19 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         combined = b"".join(path.read_bytes() for path in output.iterdir())
         self.assertNotIn(b"sensitive-login-code", combined)
         self.assertFalse((output / "response.raw.json").exists())
+
+    def test_direct_review_cannot_bypass_filtered_catalog_with_fable_model(self):
+        packet = self.root / "packet.txt"
+        packet.write_text("Synthetic packet", encoding="utf-8")
+        output = self.root / "excluded-model-out"
+        argv = ["helper", "--config", str(self.config_file), "--prompt-file", str(packet),
+                "--output-dir", str(output), "--model", "fable", "--effort", "max"]
+        with patch.object(sys, "argv", argv), patch.object(helper, "discover_in_workspace", return_value=self.catalog()), patch.object(helper, "run_child") as child, redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 1)
+        child.assert_not_called()
+        metadata = json.loads((output / "metadata.json").read_text())
+        self.assertFalse(metadata["submission_attempted"])
+        self.assertFalse(metadata["sent"])
 
 
 if __name__ == "__main__":

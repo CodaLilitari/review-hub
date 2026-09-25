@@ -30,6 +30,7 @@ DEFAULT_CONFIG = Path.home() / ".review-hub/claude-code.json"
 MAX_PACKET_BYTES = 4 * 1024 * 1024
 MAX_METADATA_BYTES = 4 * 1024 * 1024
 RELEASE_VERSION_URL = "https://downloads.claude.ai/claude-code-releases/latest"
+MODEL_BILLING_SOURCE = "https://code.claude.com/docs/en/model-config#fable-and-usage-credits"
 SYSTEM_PROMPT = (
     "You are an independent reviewer. Review only the supplied packet. "
     "Preserve the coordinator's stated identity and respond as yourself. "
@@ -318,13 +319,51 @@ def selection_string(value, maximum=256) -> bool:
             and not value.startswith("-") and not any(c.isspace() or ord(c) < 32 for c in value))
 
 
-def normalize_catalog(payload: dict) -> list[dict]:
+def billing_exclusion(value: dict) -> str | None:
+    """Conservative policy, not an assertion about this account's credit balance."""
+    ident = value["value"]
+    resolved = value.get("resolvedModel")
+    labels = (value.get("displayName", ""), value.get("description", ""))
+    if any(isinstance(text, str) and re.search(r"(?:^|[^a-z0-9])fable(?:$|[^a-z0-9])", text, re.I)
+           for text in (ident, resolved, value.get("displayName", ""))):
+        return "Fable can bill usage credits without a noninteractive consent prompt; included usage is unverified."
+    if any(isinstance(text, str) and re.search(
+            r"requires?\s+(?:usage\s+)?credits?|(?:usage\s+)?credits?\s+required|"
+            r"bills?\s+(?:to\s+)?usage\s+credits|billed\s+(?:to\s+)?usage\s+credits|credit[- ]only",
+            text, re.I) for text in labels):
+        return "The advertised model description requires usage credits; this route permits no extra charges."
+    if ident.casefold().split("[", 1)[0] == "best" and (
+            not isinstance(resolved, str) or not resolved.casefold().startswith("claude-")
+            or resolved.casefold().split("[", 1)[0] == "claude-best"):
+        return "The best alias lacks a concrete non-Fable resolution; included usage is unverified."
+    return None
+
+
+def normalize_catalog(payload: dict, excluded_models: list | None = None) -> list[dict]:
     if payload.get("fast_mode_state") not in (None, "off"):
         raise ValueError("Claude Code metadata does not show fast mode disabled")
     values = payload.get("models")
     if not isinstance(values, list) or not values or len(values) > 1000:
         raise ValueError("Claude Code returned no usable account model catalog")
-    models, seen = [], set()
+    models, seen, exclusions = [], set(), {}
+    for value in values:
+        if not isinstance(value, dict) or not selection_string(value.get("value")):
+            raise ValueError("Claude Code model metadata has an invalid selection value")
+        if value.get("resolvedModel") is not None and not selection_string(value["resolvedModel"]):
+            raise ValueError("Claude Code alias resolution metadata is malformed")
+        reason = billing_exclusion(value)
+        if reason:
+            exclusions[value["value"]] = reason
+    # Alias metadata can name another catalog row. Propagate exclusions without
+    # assuming a particular release's aliases or allowing an indirect bypass.
+    for _ in range(len(values)):
+        added = False
+        for value in values:
+            if value["value"] not in exclusions and value.get("resolvedModel") in exclusions:
+                exclusions[value["value"]] = "The alias resolves to a model excluded by the no-extra-charges policy."
+                added = True
+        if not added:
+            break
     for value in values:
         if not isinstance(value, dict) or not selection_string(value.get("value")):
             raise ValueError("Claude Code model metadata has an invalid selection value")
@@ -333,6 +372,8 @@ def normalize_catalog(payload: dict) -> list[dict]:
         if ident in seen or not isinstance(label, str) or not label.strip() or len(label) > 500:
             raise ValueError("Claude Code model catalog contains an ambiguous or invalid entry")
         seen.add(ident)
+        if ident in exclusions:
+            continue
         supports = value.get("supportsEffort")
         levels = value.get("supportedEffortLevels")
         if supports is not None and type(supports) is not bool:
@@ -349,20 +390,29 @@ def normalize_catalog(payload: dict) -> list[dict]:
                 raise ValueError("Claude Code alias resolution metadata is malformed")
             entry["resolved_id"] = value["resolvedModel"]
         models.append(entry)
+    if excluded_models is not None:
+        excluded_models.extend({"id": ident, "reason": exclusions[ident]} for ident in sorted(exclusions))
+    if not models:
+        raise ValueError("Claude Code returned no model eligible under the no-extra-charges policy")
     return sorted(models, key=lambda item: item["id"])
 
 
 def discover_in_workspace(config: dict, cwd: Path, env: dict, mcp_file: Path) -> dict:
     checks = runtime_preflight(config, cwd, env)
     payload = initialize_metadata(initialize_command(Path(config["exe"]), mcp_file), cwd, env)
-    models = normalize_catalog(payload)
+    excluded_models = []
+    models = normalize_catalog(payload, excluded_models)
     return {"provider": "claude-code", "source": "official_cli",
             "runtime_version": checks["runtime_version"], "models": models,
             "runtime_update": check_runtime_update(checks["runtime_version"]),
-            "evidence": "Claude Code native initialize returned the installed client's model catalog; subscription auth was checked and no user prompt was sent.",
+            "evidence": ("Claude Code native initialize returned the installed client's filtered model catalog; "
+                         "subscription auth was checked and no user prompt was sent. "
+                         f"Excluded {len(excluded_models)} choices under the no-extra-charges policy; " + MODEL_BILLING_SOURCE),
             "discovery_details": {"observed_at": utc_now(), "method": "native_control_initialize",
                          "user_prompt_sent": False, "auth": checks["auth"],
                          "runtime_provenance": checks["runtime_provenance"],
+                         "excluded_models": excluded_models,
+                         "billing_policy_source": MODEL_BILLING_SOURCE,
                          "billing_entitlement": "separate current included-usage observation required",
                          "backend_model_attested": False}}
 
