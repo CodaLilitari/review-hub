@@ -22,6 +22,7 @@ from .attachments import read_files, inline_packet, stage_files, verify_files, m
 from . import __version__
 from .identity import IdentityStore
 from .models import ModelStore, discover
+from .reviews import normalize_review, check_anchors, default_lineage, text as bounded_text
 
 BASE = Path(__file__).resolve().parents[2]
 ACTIVE = ("prepared", "running")
@@ -110,6 +111,10 @@ class Hub:
                     id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, project TEXT NOT NULL,
                     provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL,
                     heartbeat REAL NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS review_records (
+                    id TEXT PRIMARY KEY, project TEXT NOT NULL, job_id TEXT NOT NULL,
+                    kind TEXT NOT NULL, created TEXT NOT NULL, data TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS review_records_job ON review_records(project,job_id,kind);
             """)
             # Serialize the additive migration across concurrent hub/worker starts.
             # Existing observations retain their allowance unless explicitly revoked.
@@ -475,6 +480,143 @@ class Hub:
                 c.execute("UPDATE jobs SET cancel_requested=1 WHERE id=?", (job_id,))
                 return {"job_id": job_id, "state": "cancellation_requested", "note": "Worker will terminate its local process tree; provider-side delivery/cancellation may remain unknown"}
             return {"job_id": job_id, "state": row["state"], "note": "No active local worker was cancelled"}
+
+    def capabilities(self, provider: str | None = None) -> dict:
+        from .capabilities import all_capabilities, route_capabilities
+        return route_capabilities(provider) if provider is not None else all_capabilities()
+
+    def _review_record(self, c, project, job_id, kind):
+        row = c.execute("SELECT data FROM review_records WHERE project=? AND job_id=? AND kind=? ORDER BY rowid DESC LIMIT 1",
+                        (project, job_id, kind)).fetchone()
+        return json.loads(row['data']) if row else None
+
+    def _append_review_record(self, c, project, job_id, kind, data):
+        data = {**data, 'record_id': uuid.uuid4().hex, 'recorded_at': now()}
+        c.execute('INSERT INTO review_records VALUES (?,?,?,?,?,?)',
+                  (data['record_id'], project, job_id, kind, data['recorded_at'], encoded(data)))
+        return data
+
+    def _answer_snapshot(self, job):
+        from .attachments import no_links, check_open_path
+        root = Path(job['evidence_directory']).resolve(strict=True)
+        path = root / 'answer.txt'
+        no_links(path, root)
+        with path.open('rb') as stream:
+            check_open_path(stream, path)
+            content = stream.read(1048577)
+        no_links(path, root)
+        if len(content) > 1048576:
+            raise ValueError('Saved answer exceeds the 1 MiB review bound')
+        if job.get('answer_sha256') and digest(content) != job['answer_sha256']:
+            raise ValueError('Saved answer hash differs from its receipt')
+        return content.decode('utf-8'), digest(content)
+
+    def record_review(self, project: str, job_id: str, review: dict, evidence: str) -> dict:
+        """Append a coordinator-normalized advisory envelope; never replace original output."""
+        project = project_path(project)
+        envelope = normalize_review(review)
+        evidence = bounded_text(evidence, 'evidence', 4000, empty=False)
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            job = json.loads(self._job(c, project, job_id)['data'])
+            if job['state'] not in ('returned', 'returned_via_handoff'):
+                raise ValueError('Structured findings require an actually returned review')
+            _, answer_hash = self._answer_snapshot(job)
+            envelope = check_anchors(envelope, job)
+            envelope.update(source_answer_sha256=answer_hash, evidence=evidence,
+                            provenance='Coordinator-normalized provider advice; supplied labels are not independent verification')
+            return self._append_review_record(c, project, job_id, 'review', envelope)
+
+    def review(self, project: str, job_id: str) -> dict:
+        """Read latest structured findings and refresh citation integrity without dispatch."""
+        project = project_path(project)
+        with self.connect() as c:
+            job = json.loads(self._job(c, project, job_id)['data'])
+            envelope = self._review_record(c, project, job_id, 'review')
+            lineage = self._review_record(c, project, job_id, 'lineage') or default_lineage(job)
+            revisions = c.execute("SELECT id,created FROM review_records WHERE project=? AND job_id=? AND kind='review' ORDER BY rowid",
+                                  (project, job_id)).fetchall()
+        answer_status = 'not_recorded'
+        if envelope:
+            envelope = check_anchors(envelope, job)
+            try:
+                _, answer_hash = self._answer_snapshot(job)
+                answer_status = 'matched' if answer_hash == envelope['source_answer_sha256'] else 'changed'
+            except (OSError, ValueError, UnicodeError):
+                answer_status = 'unavailable_or_changed'
+        return {'job_id': job_id, 'review': envelope, 'lineage': lineage,
+                'source_answer_integrity': answer_status, 'revisions': [dict(r) for r in revisions],
+                'claims_independently_verified': False}
+
+    def record_lineage(self, project: str, job_id: str, parent_job_id: str, kind: str,
+                       evidence: str, omitted_context: str = '') -> dict:
+        """Record an observed relationship. Does not perform replay, resume, or any send."""
+        project = project_path(project)
+        if kind not in ('snapshot_replay', 'app_conversation'):
+            raise ValueError('Only reported snapshot_replay or app_conversation is supported; native resume is not implemented')
+        evidence = bounded_text(evidence, 'evidence', 4000, empty=False)
+        omitted_context = bounded_text(omitted_context, 'omitted_context', 8000)
+        if job_id == parent_job_id:
+            raise ValueError('A job cannot be its own parent')
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            child_row, parent_row = self._job(c, project, job_id), self._job(c, project, parent_job_id)
+            child, parent = json.loads(child_row['data']), json.loads(parent_row['data'])
+            # The monotone row order prevents cycles, including across later revisions.
+            order = {r['id']: r['rowid'] for r in c.execute('SELECT rowid,id FROM jobs WHERE id IN (?,?)', (job_id, parent_job_id))}
+            if order[parent_job_id] >= order[job_id]:
+                raise ValueError('Parent must precede this child job')
+            if parent['state'] not in ('returned', 'returned_via_handoff') or child['state'] not in ('returned', 'returned_via_handoff'):
+                raise ValueError('Observed continuity requires returned parent and child jobs')
+            if kind == 'app_conversation':
+                if (child['provider'] not in HANDOFF or child['provider'] != parent['provider']
+                        or not child.get('conversation_ref') or child['conversation_ref'] != parent.get('conversation_ref')):
+                    raise ValueError('App continuity requires the same provider and exact conversation reference')
+            _, parent_hash = self._answer_snapshot(parent)
+            data = {**default_lineage(child), 'kind': kind, 'parent_job_id': parent_job_id,
+                    'mechanism': 'coordinator_observed_same_app_conversation' if kind == 'app_conversation' else 'coordinator_reported_context_replay',
+                    'parent_answer_sha256': parent_hash, 'parent_packet_sha256': parent.get('packet_sha256'),
+                    'parent_attachment_manifest_sha256': parent.get('attachment_manifest_sha256'),
+                    'omitted_context': omitted_context, 'evidence': evidence,
+                    'evidence_basis': 'Coordinator attestation; no provider-native resume or replay executed by this call'}
+            return self._append_review_record(c, project, job_id, 'lineage', data)
+
+    def comparison_report(self, project: str, job_ids: list[str], format: str = 'html') -> dict:
+        """Render exact selected local records; never contact a provider or publish."""
+        from .capabilities import attachment_view
+        from .reporting import render_report
+        project = project_path(project)
+        if (not isinstance(job_ids, list) or not 1 <= len(job_ids) <= 16
+                or any(not isinstance(j, str) for j in job_ids) or len(set(job_ids)) != len(job_ids)):
+            raise ValueError('Select 1..16 unique job IDs from this project')
+        if format not in ('html', 'markdown'):
+            raise ValueError('Report format must be html or markdown')
+        entries = []
+        for job_id in job_ids:
+            with self.connect() as c:
+                job = json.loads(self._job(c, project, job_id)['data'])
+            reviewed = self.review(project, job_id)
+            answer, answer_notice = '', ''
+            try:
+                answer, _ = self._answer_snapshot(job)
+                if len(answer) > 64000:
+                    answer_notice = 'Answer display truncated at 64000 characters; original receipt is retained'
+                    answer = answer[:64000]
+            except (OSError, ValueError, UnicodeError):
+                answer_notice = 'Saved answer is absent, changed, or outside the report size bound'
+            transport = job.get('attachment_transport', 'app_file_handoff' if job['provider'] in HANDOFF else 'utf8_json_in_prompt')
+            entries.append({'job': {**job, 'answer_notice': answer_notice,
+                                    'source_answer_integrity': reviewed['source_answer_integrity']},
+                            'answer': answer, 'review': reviewed['review'], 'lineage': reviewed['lineage'],
+                            'attachments': {'input': [attachment_view(m, 'input', transport) for m in job.get('attachments', [])],
+                                            'output': [attachment_view(m, 'output', 'returned_file_snapshot') for m in job.get('returned_artifacts', [])]}})
+        data = {'schema_version': 1, 'project': project, 'generated_at': now(), 'jobs': entries,
+                'capabilities': {e['job']['provider']: self.capabilities(e['job']['provider']) for e in entries}}
+        content = render_report(data, format)
+        if len(content.encode('utf-8')) > 4 * 1048576:
+            raise ValueError('Rendered report exceeds 4 MiB; select fewer jobs')
+        return {'format': format, 'content': content, 'job_ids': job_ids, 'generated_at': data['generated_at'],
+                'sent': False, 'published': False, 'claims_independently_verified': False}
 
     def handoff(self, project: str, provider: str, prompt: str, conversation_ref: str = "", attachments: list[str] | None = None) -> dict:
         identity = self.identity.require_configured()

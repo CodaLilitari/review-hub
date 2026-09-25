@@ -32,6 +32,8 @@ def parser() -> argparse.ArgumentParser:
     commands = command.add_subparsers(dest="command", required=True)
     commands.add_parser("routes", help="List route capabilities without sending a prompt.")
     commands.add_parser("identity-status", help="Read saved naming choices; unconfigured outbound work is blocked.")
+    caps = commands.add_parser('capabilities', help='Read static input/output/session capability contracts.')
+    caps.add_argument('--provider')
     models = commands.add_parser("models", help="Read account model choices; --refresh probes a CLI without generation.")
     models.add_argument("--provider", required=True)
     models.add_argument("--refresh", action="store_true")
@@ -45,10 +47,15 @@ def parser() -> argparse.ArgumentParser:
         ("submit", "Queue bounded reviews and return IDs without waiting for model completion."),
         ("handoff", "Prepare a scoped conversation handoff; this does not send it."),
         ("record-handoff-result", "Record coordinator-observed app output; not automated delivery verification."),
+        ('record-review', 'Append normalized findings and check exact saved source citations.'),
+        ('record-lineage', 'Record observed parent context; never sends or resumes.'),
+        ('report', 'Render selected jobs to static HTML/Markdown; no provider requests.'),
     ):
         child = commands.add_parser(name, help=help_text)
         child.add_argument("jsonfile", help="Exact UTF-8 JSON payload file.")
-    for name in ("jobs", "result", "cancel", "attachment-files"):
+        if name == 'report':
+            child.add_argument('--output', type=Path, help='New exact report file inside the selected project; never overwrite.')
+    for name in ("jobs", "result", "cancel", "attachment-files", 'review'):
         child = commands.add_parser(name)
         child.add_argument("--project", required=True)
         if name == "jobs":
@@ -69,6 +76,32 @@ def main(argv: list[str] | None = None) -> int:
         hub = Hub(state_dir=args.state_dir)
         if args.command == "routes":
             value = hub.routes()
+        elif args.command == 'capabilities':
+            value = hub.capabilities(args.provider)
+        elif args.command == 'record-review':
+            value = hub.record_review(**_payload(args.jsonfile, {'project', 'job_id', 'review', 'evidence'}))
+        elif args.command == 'record-lineage':
+            value = hub.record_lineage(**_payload(args.jsonfile, {'project', 'job_id', 'parent_job_id', 'kind', 'evidence'}, {'omitted_context'}))
+        elif args.command == 'review':
+            value = hub.review(args.project, args.job_id)
+        elif args.command == 'report':
+            payload = _payload(args.jsonfile, {'project', 'job_ids'}, {'format'})
+            value = hub.comparison_report(**payload)
+            if args.output:
+                from .attachments import no_links, check_open_path
+                from .core import project_path
+                import os
+                root = Path(project_path(payload['project']))
+                target = args.output
+                if not target.is_absolute() or '..' in target.parts or (os.name == 'nt' and ':' in str(target)[2:]):
+                    raise ValueError('Report output must be an exact absolute project path without traversal/streams')
+                target.relative_to(root)
+                no_links(target.parent, root)
+                with target.open('xb') as stream:
+                    check_open_path(stream, target)
+                    stream.write(value['content'].encode('utf-8'))
+                value = {k: v for k, v in value.items() if k != 'content'}
+                value['output_path'] = str(target)
         elif args.command == "identity-status":
             value = hub.identity_status()
         elif args.command == "models":

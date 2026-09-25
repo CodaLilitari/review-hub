@@ -198,7 +198,7 @@ def run_job(hub: Hub, job_id: str):
         # Only the final answer is available via MCP. Raw evidence remains
         # private on disk and is never included in normal tool responses.
         if answer:
-            (directory / "answer.txt").write_text(answer, encoding="utf-8")
+            (directory / "answer.txt").write_bytes(answer.encode("utf-8"))
         models = model_labels(metadata.get("verified_response_models", []))
         # CLI initialization can expose the selected model without attesting to
         # the response backend. Preserve that weaker evidence separately; it
@@ -219,6 +219,7 @@ def run_job(hub: Hub, job_id: str):
                         provider_session_id=metadata.get("session_id"),
                         error=None if successful else "Inspect the local helper receipt before retrying; no automatic retry was made",
                         answer_available=bool(answer.strip()),
+                        answer_sha256=digest(answer.encode('utf-8')) if answer else None,
                         attachment_delivery=("embedded_text_response_received" if successful else "see_submission_state") if data.get("attachments") else "no_attachments",
                         provider_resume=False)
     except BaseException as exc:

@@ -102,6 +102,36 @@ class GrokHelperTests(unittest.TestCase):
         self.assertEqual(env["GROK_CLAUDE_HOOKS_ENABLED"], "0")
         self.assertEqual(env["GROK_WORKFLOWS"], "0")
 
+    def test_worker_loaded_helper_no_arg_environment_uses_configured_profile(self):
+        from coda_review_hub.worker import load_helper
+
+        # Match the worker's verified-byte snapshot import and no-argument call,
+        # using only a synthetic local executable/profile configuration.
+        runner = self.work / "pinned_helper.py"
+        runner.write_bytes(HELPER_PATH.read_bytes())
+        worker_helper = load_helper(runner)
+        injected = {"XAI_API_KEY": "fixture-secret", "GROK_AUTH_PATH": "untrusted",
+                    "GROK_HOME": "wrong-profile", "HTTPS_PROXY": "untrusted",
+                    "GROK_CLAUDE_HOOKS_ENABLED": "1", "PYTHONPATH": "untrusted"}
+        with patch.object(worker_helper, "DEFAULT_CONFIG", self.config_path), patch.dict(os.environ, injected):
+            env = worker_helper.safe_env()
+            explicit = worker_helper.safe_env(self.profile)
+        self.assertEqual(env, explicit)
+        self.assertEqual(env["GROK_HOME"], str(self.profile.resolve()))
+        self.assertFalse({"XAI_API_KEY", "GROK_AUTH_PATH", "HTTPS_PROXY", "PYTHONPATH"} & set(env))
+        self.assertEqual(env["GROK_CLAUDE_HOOKS_ENABLED"], "0")
+        self.assertEqual(env["GROK_DISABLE_AUTOUPDATER"], "1")
+
+    def test_no_arg_environment_fails_closed_for_missing_runtime_config(self):
+        with patch.object(helper, "DEFAULT_CONFIG", self.root / "missing.json"), \
+             self.assertRaises(FileNotFoundError):
+            helper.safe_env()
+
+    def test_explicit_profile_environment_does_not_require_default_config(self):
+        with patch.object(helper, "load_config", side_effect=AssertionError("must not read default config")):
+            env = helper.safe_env(self.profile)
+        self.assertEqual(env["GROK_HOME"], str(self.profile))
+
     @unittest.skipUnless(os.name == "nt", "Windows publisher contract")
     def test_publisher_validation_accepts_changed_signed_bytes_without_version_pin(self):
         signature = self.result(json.dumps({"status": "Valid", "subject": "CN=X.AI LLC, O=X.AI LLC, C=US"}).encode())

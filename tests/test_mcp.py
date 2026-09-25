@@ -106,6 +106,7 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
                 "routes", "observe_usage", "submit", "jobs", "result", "cancel", "handoff",
                 "record_handoff_result", "attachment_files", "identity_status", "configure_identity",
                 "model_status", "refresh_models", "record_models", "select_model",
+                'capabilities', 'record_review', 'review', 'record_lineage', 'comparison_report',
             })
             self.assertIn("attestation", tools["observe_usage"].description)
             response = await client.call_tool("routes")
@@ -114,6 +115,34 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("claude-code", serialized)
             self.assertIn("claude-desktop", serialized)
             self.assertIn("grok", serialized)
+
+    async def test_structured_review_and_static_report_real_mcp(self) -> None:
+        hub = Hub(self.root / "state")
+        source = self.project / "synthetic.py"
+        source.write_bytes(b"answer = 42\n")
+        job = hub.handoff(str(self.project), "chatgpt", "Synthetic only", "synthetic-mcp-conversation", [str(source)])["job"]
+        aid = job["attachments"][0]
+        hub.record_handoff_result(str(self.project), job["id"], "Synthetic returned advice", "Observed fixture response only.", "synthetic-mcp-conversation", observed_attachment_ids=[aid["attachment_id"]], attachment_evidence="Observed synthetic chip only.")
+        async with Client(self.params, read_timeout_seconds=15) as client:
+            capability = await client.call_tool("capabilities", {"provider": "chatgpt"})
+            self.assertFalse(capability.is_error)
+            self.assertIsNone(capability.structured_content["image_visual_input"])
+            result = await client.call_tool("record_review", {
+                "project": str(self.project), "job_id": job["id"], "evidence": "Normalized synthetic fixture.",
+                "review": {"schema_version": 1, "summary": "Fixture summary", "findings": [{
+                    "id": "f1", "severity": "info", "claim": "The assignment is present.",
+                    "anchors": [{"attachment_id": aid["attachment_id"], "sha256": aid["sha256"], "start_line": 1, "end_line": 1, "quote": "answer = 42"}]}]}})
+            self.assertFalse(result.is_error)
+            self.assertEqual(result.structured_content["findings"][0]["anchors"][0]["check"]["status"], "matched")
+            result = await client.call_tool("review", {"project": str(self.project), "job_id": job["id"]})
+            self.assertFalse(result.is_error)
+            self.assertEqual(result.structured_content["source_answer_integrity"], "matched")
+            result = await client.call_tool("comparison_report", {"project": str(self.project), "job_ids": [job["id"]]})
+            self.assertFalse(result.is_error)
+            self.assertIn("Fixture summary", result.structured_content["content"])
+            self.assertFalse(result.structured_content["published"])
+            denied = await client.call_tool("record_lineage", {"project": str(self.project), "job_id": job["id"], "parent_job_id": job["id"], "kind": "native_resume", "evidence": "Not supported"})
+            self.assertTrue(denied.is_error)
 
     async def test_missing_usage_blocks_dispatch_without_creating_jobs(self) -> None:
         # Reach the quota gate using only a local inert helper fixture. A public
@@ -261,7 +290,7 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
         package = self.root / "fixture-package"
         source = package / "src" / "coda_review_hub"
         source.mkdir(parents=True)
-        for name in ("__init__.py", "attachments.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py"):
+        for name in ("__init__.py", "attachments.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py", 'reviews.py', 'capabilities.py', 'reporting.py'):
             shutil.copy2(PACKAGE_ROOT / "src" / "coda_review_hub" / name, source / name)
         helper = package / "offline_helper.py"
         shutil.copy2(Path(__file__).with_name("mcp_disconnect_helper.py"), helper)

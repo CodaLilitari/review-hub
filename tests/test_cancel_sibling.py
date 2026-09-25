@@ -24,7 +24,7 @@ class CancelSiblingTests(unittest.TestCase):
             package = root / "offline-package"
             source = package / "src" / "coda_review_hub"
             source.mkdir(parents=True)
-            for name in ("__init__.py", "core.py", "worker.py", "attachments.py", "identity.py", "models.py"):
+            for name in ("__init__.py", "core.py", "worker.py", "attachments.py", "identity.py", "models.py", "reviews.py", "capabilities.py", "reporting.py"):
                 shutil.copy2(PACKAGE_ROOT / "src" / "coda_review_hub" / name, source / name)
             # Reuse the existing offline fixture, with a local release gate so
             # the sibling cannot finish before cancellation has been observed.

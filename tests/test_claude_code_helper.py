@@ -220,6 +220,76 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-metadata"):
             helper.initialize_metadata([sys.executable, "-c", script], self.root, helper.clean_environment(), timeout=5)
 
+    def test_metadata_accepts_catalog_push_before_matching_initialize_only(self):
+        event = {"type": "system", "subtype": "commands_changed", "uuid": "fixture-event",
+                 "session_id": "fixture-session", "commands": [
+                     {"name": "fixture", "description": "private-catalog-never-retain",
+                      "argumentHint": "", "aliases": ["fixture-alias"], "builtin": True}]}
+        script = (
+            "import sys,json; frame=json.loads(sys.stdin.readline()); "
+            "assert frame['type']=='control_request'; assert frame['request']['subtype']=='initialize'; "
+            f"print({json.dumps(json.dumps(event))},flush=True); "
+            "print(json.dumps({'type':'system','subtype':'init','tools':[],'mcp_servers':[]}),flush=True); "
+            "print(json.dumps({'type':'control_response','response':{'subtype':'success',"
+            "'request_id':frame['request_id'],'response':{'models':[]}}}),flush=True); "
+            "rest=sys.stdin.read(); assert not rest"
+        )
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            payload = helper.initialize_metadata([sys.executable, "-c", script], self.root,
+                                                 helper.clean_environment(), timeout=5)
+        self.assertEqual(payload, {"models": []})
+        self.assertEqual(captured.getvalue(), "")
+        self.assertNotIn("private-catalog", json.dumps(payload))
+
+    def test_metadata_catalog_shape_validation_accepts_empty_catalog(self):
+        helper.validate_commands_changed({"commands": [], "uuid": "event", "session_id": "session"})
+
+    def test_metadata_rejects_malformed_catalog_without_echoing_payload(self):
+        base = {"type": "system", "subtype": "commands_changed", "uuid": "event",
+                "session_id": "session", "commands": []}
+        invalid = [None, {}, [None], [{"name": "sensitive-never-echo"}],
+                   [{"name": "n", "description": "d", "argumentHint": "", "aliases": "bad"}],
+                   [{"name": "n", "description": "d", "argumentHint": "", "builtin": 1}]]
+        for commands in invalid:
+            with self.subTest(commands=commands):
+                event = {**base, "commands": commands}
+                script = f"import sys; sys.stdin.readline(); print({json.dumps(json.dumps(event))},flush=True)"
+                with self.assertRaisesRegex(ValueError, "catalog metadata") as caught:
+                    helper.initialize_metadata([sys.executable, "-c", script], self.root,
+                                               helper.clean_environment(), timeout=5)
+                self.assertNotIn("sensitive-never-echo", str(caught.exception))
+        for field in ("uuid", "session_id"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "catalog metadata"):
+                helper.validate_commands_changed({**base, field: None})
+
+    def test_metadata_catalog_push_does_not_allow_tools_or_other_activity(self):
+        push = {"type": "system", "subtype": "commands_changed", "uuid": "event",
+                "session_id": "session", "commands": []}
+        for field in ("tools", "mcp_servers"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "unexpected tools"):
+                helper.validate_commands_changed({**push, field: ["unexpected"]})
+            event = {"type": "system", "subtype": "init", field: ["unexpected"]}
+            script = ("import sys; sys.stdin.readline(); "
+                      f"print({json.dumps(json.dumps(push))},flush=True); "
+                      f"print({json.dumps(json.dumps(event))},flush=True)")
+            with self.subTest(init_field=field), self.assertRaisesRegex(ValueError, "unexpected tools"):
+                helper.initialize_metadata([sys.executable, "-c", script], self.root,
+                                           helper.clean_environment(), timeout=5)
+        activity = [{"type": "assistant", "message": "no"},
+                    {"type": "tool", "content": "no"},
+                    {"type": "control_request", "request": {"subtype": "can_use_tool"}},
+                    {"type": "system", "subtype": "task_started"},
+                    {"type": "system", "subtype": "future_event"}]
+        for event in activity:
+            with self.subTest(event=event):
+                script = ("import sys; sys.stdin.readline(); "
+                          f"print({json.dumps(json.dumps(push))},flush=True); "
+                          f"print({json.dumps(json.dumps(event))},flush=True)")
+                with self.assertRaisesRegex(ValueError, "non-metadata"):
+                    helper.initialize_metadata([sys.executable, "-c", script], self.root,
+                                               helper.clean_environment(), timeout=5)
+
     def test_metadata_rejects_error_without_echoing_sensitive_message(self):
         script = (
             "import sys,json; f=json.loads(sys.stdin.readline()); "

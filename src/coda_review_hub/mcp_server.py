@@ -105,6 +105,63 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         return call(hub.routes)
 
     @server.tool(annotations=read, structured_output=True)
+    def capabilities(provider: str | None = None) -> dict[str, Any]:
+        """Describe implemented input/output and session capabilities, not account entitlement.
+
+        Null app capabilities require current app observation. Native-file staging is not upload
+        or visual inspection. This reads static route contracts and does not probe providers.
+        """
+        return call(hub.capabilities, provider)
+
+    @server.tool(annotations=local_write, structured_output=True)
+    def record_review(project: str, job_id: str, review: dict[str, Any], evidence: str) -> dict[str, Any]:
+        """Append normalized findings for a returned job, retaining the original answer.
+
+        review: schema_version=1, summary, findings, optional limitations (string list).
+        Each finding has id, severity (info/low/medium/high/critical), claim; optional
+        evidence_status (reported_demonstration/inferred/missing_evidence), uncertainty,
+        verification, proposed_change, and anchors. Each anchor requires attachment_id,
+        sha256, one-based start_line/end_line, and exact quote. Cite only this job's input
+        snapshots. Supplied check/verified fields are rejected. Mechanical anchor matches
+        verify quoted text, never truth of the finding. evidence describes normalization.
+        """
+        return call(hub.record_review, project, job_id, review, evidence)
+
+    @server.tool(annotations=read, structured_output=True)
+    def review(project: str, job_id: str) -> dict[str, Any]:
+        """Read normalized findings/history and recheck saved citations without sending.
+
+        Rechecks snapshot and source-answer integrity. Unanchored, mismatched, unavailable,
+        or binary/visual citations remain distinct from matching source quotations.
+        """
+        return call(hub.review, project, job_id)
+
+    @server.tool(annotations=local_write, structured_output=True)
+    def record_lineage(project: str, job_id: str, parent_job_id: str,
+                       kind: Literal['snapshot_replay', 'app_conversation'], evidence: str,
+                       omitted_context: str = '') -> dict[str, Any]:
+        """Record observed parent/child context for two returned jobs in the same project.
+
+        Same-app continuation requires the same provider and exact conversation reference.
+        Snapshot replay is a coordinator attestation; record omitted/truncated context.
+        This never performs a send, replay, fork, or native CLI resume. Native resume is
+        not a production capability; a provider session ID alone does not establish it.
+        """
+        return call(hub.record_lineage, project, job_id, parent_job_id, kind, evidence, omitted_context)
+
+    @server.tool(annotations=read, structured_output=True)
+    def comparison_report(project: str, job_ids: Annotated[list[StrictStr], Field(min_length=1, max_length=16)],
+                          format: Literal['html', 'markdown'] = 'html') -> dict[str, Any]:
+        """Return a static escaped comparison of explicitly selected local job records.
+
+        Includes model/mode observations, delivery states, findings, citation checks,
+        session lineage and attachment metadata. No live calls, scripts, external assets,
+        file uploads or publishing. The report contains selected project/private output;
+        save locally and share only within the user's authorized scope.
+        """
+        return call(hub.comparison_report, project, job_ids, format)
+
+    @server.tool(annotations=read, structured_output=True)
     def model_status(provider: str) -> dict[str, Any]:
         """Read saved catalog and user choice; no provider call or model generation."""
         return call(hub.model_status, provider)

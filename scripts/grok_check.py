@@ -63,7 +63,10 @@ def load_config(path: Path | None = None) -> dict:
     return {"exe": exe.resolve(), "profile": profile.resolve()}
 
 
-def safe_env(profile: Path) -> dict[str, str]:
+def safe_env(profile: Path | None = None) -> dict[str, str]:
+    """Build the sanitized environment, including the worker's no-argument route."""
+    if profile is None:
+        profile = load_config()["profile"]
     env = {key: value for key, value in os.environ.items() if key.upper() in ENV_ALLOWLIST}
     env["PATH"] = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32")
     env["GROK_HOME"] = str(profile)

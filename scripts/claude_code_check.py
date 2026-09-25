@@ -224,6 +224,30 @@ def initialize_command(exe: Path, mcp_file: Path) -> list[str]:
                                             "--output-format", "stream-json", "--verbose"]
 
 
+def validate_commands_changed(event: dict) -> None:
+    """Validate and discard the SDK's informational slash-command catalog push.
+
+    SDKCommandsChangedMessage is metadata, not command invocation. Never run,
+    cache, or log these descriptions; discovery only needs the matching
+    initialize response. Unknown event types remain rejected by the caller.
+    """
+    commands = event.get("commands")
+    if (not isinstance(commands, list)
+            or not isinstance(event.get("uuid"), str)
+            or not isinstance(event.get("session_id"), str)
+            or event.get("tools", []) or event.get("mcp_servers", [])):
+        raise ValueError("Claude Code command catalog metadata was malformed or exposed unexpected tools")
+    for command in commands:
+        if (not isinstance(command, dict)
+                or any(not isinstance(command.get(key), str)
+                       for key in ("name", "description", "argumentHint"))
+                or ("aliases" in command and
+                    (not isinstance(command["aliases"], list)
+                     or any(not isinstance(alias, str) for alias in command["aliases"])))
+                or ("builtin" in command and not isinstance(command["builtin"], bool))):
+            raise ValueError("Claude Code command catalog metadata was malformed")
+
+
 def initialize_metadata(command, cwd: Path, env: dict, timeout=45) -> dict:
     """Exchange one initialize frame, then close; never enqueue user input."""
     process = subprocess.Popen(command, cwd=str(cwd), env=env, stdin=subprocess.PIPE,
@@ -294,6 +318,9 @@ def initialize_metadata(command, cwd: Path, env: dict, timeout=45) -> dict:
             if event.get("type") == "system" and event.get("subtype") == "init":
                 if event.get("tools", []) or event.get("mcp_servers", []):
                     raise ValueError("Claude Code metadata initialization exposed unexpected tools")
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "commands_changed":
+                validate_commands_changed(event)
                 continue
             raise ValueError("Claude Code discovery received non-metadata activity; no user prompt was sent")
         raise ValueError("Claude Code model discovery timed out without sending a user prompt")

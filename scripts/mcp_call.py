@@ -18,8 +18,11 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("request_file", type=Path)
     parser.add_argument("--state-dir", type=Path)
+    parser.add_argument('--call-timeout', type=int, default=180, help='MCP call timeout in seconds, including model catalog refresh (30..600). A timeout never authorizes a duplicate send.')
     parser.add_argument("--wait", action="store_true", help="Keep the MCP connection alive through a submitted batch; print status changes")
     args = parser.parse_args()
+    if not 30 <= args.call_timeout <= 600:
+        parser.error('--call-timeout must be between 30 and 600 seconds')
     request = json.loads(args.request_file.read_text(encoding="utf-8-sig"))
     command = ["-m", "coda_review_hub.mcp_server"]
     if args.state_dir:
@@ -28,7 +31,7 @@ async def main():
         "SYSTEMROOT", "WINDIR", "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH",
         "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "COMSPEC", "PATHEXT", "PATH"}}
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
-    async with Client(StdioServerParameters(command=sys.executable, args=command, env=env), read_timeout_seconds=30) as client:
+    async with Client(StdioServerParameters(command=sys.executable, args=command, env=env), read_timeout_seconds=args.call_timeout) as client:
         result = await client.call_tool(request["tool"], request.get("arguments", {}))
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=True), flush=True)
         if args.wait and request["tool"] == "submit" and not result.is_error:
