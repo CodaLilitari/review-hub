@@ -36,6 +36,13 @@ def clean_environment():
 
 safe_env = clean_environment
 
+def discover_models():
+    return {"source": "official_cli", "runtime_version": "fixture-1", "evidence": "Synthetic offline model catalog for tests only.",
+            "models": [
+                {"id": "fixture-opus", "efforts": ["max", "low"]},
+                {"id": "fixture-grok", "efforts": ["xhigh"]},
+                {"id": "fixture-antigravity", "efforts": ["xhigh", "fixture-high"]}]}
+
 def main():
     def offline(event, args):
         if event in {"socket.connect", "os.system"}:
@@ -82,6 +89,26 @@ def main():
 if __name__ == "__main__":
     raise SystemExit(main())
 """
+
+
+def seed_models(hub, pins=None):
+    """Explicit synthetic choices; never infer production user preferences."""
+    catalog = [
+        {"id": "fixture-opus", "efforts": ["max", "low"]},
+        {"id": "fixture-grok", "efforts": ["xhigh"]},
+        {"id": "fixture-antigravity", "efforts": ["xhigh", "fixture-high"]}]
+    pins = pins or {"claude-code": {"model": "fixture-opus", "effort": "max"},
+                    "grok": {"model": "fixture-grok", "effort": "xhigh"}}
+    for provider, pin in pins.items():
+        provider = core.LEGACY_AUTO.get(provider, provider)
+        if provider not in core.AUTO or hub.models.status(provider)["selection"]:
+            continue
+        status = hub.models.record(provider, catalog, "Synthetic account catalog fixture only.", "official_cli")
+        hub.select_model(provider, pin["model"], pin["effort"], status["catalog"]["fingerprint"], "Explicit synthetic test choice only.")
+    for provider in core.HANDOFF:
+        status = hub.models.record(provider, [{"id": "fixture-app", "efforts": ["default"]}],
+                                   "Synthetic app picker observation only.", "observed_app")
+        hub.select_model(provider, "fixture-app", "default", status["catalog"]["fingerprint"], "Explicit synthetic test choice only.")
 
 
 def wait_for(predicate, seconds=8):
@@ -132,7 +159,7 @@ class HubTests(unittest.TestCase):
         self.fake = self.package / "fake_helper.py"
         self.fake.write_bytes(FAKE_HELPER.encode("utf-8"))
         self.pins = {
-            "claude": {"path": str(self.fake), "sha256": core.digest(self.fake.read_bytes()), "model": "fixture-opus", "effort": "max"},
+            "claude-code": {"path": str(self.fake), "sha256": core.digest(self.fake.read_bytes()), "model": "fixture-opus", "effort": "max"},
             "grok": {"path": str(self.fake), "sha256": core.digest(self.fake.read_bytes()), "model": "fixture-grok", "effort": "xhigh"},
         }
         self.write_pins()
@@ -144,14 +171,17 @@ class HubTests(unittest.TestCase):
             agent_name="FixtureAgent", user_name="FixtureUser",
             evidence="Explicit synthetic names for isolated offline tests; no real identity or account.",
         )
+        seed_models(self.hub, self.pins)
         launch = patch.object(self.hub, "_launch")
         self.launch = launch.start()
         self.addCleanup(launch.stop)
 
     def write_pins(self):
         (self.package / "helpers.json").write_text(json.dumps(self.pins), encoding="utf-8")
+        if hasattr(self, "hub"):
+            seed_models(self.hub, self.pins)
 
-    def observe(self, provider="claude", jobs=1, project=None, age=0, **overrides):
+    def observe(self, provider="claude-code", jobs=1, project=None, age=0, **overrides):
         args = dict(provider=provider, project=str(project or self.project),
                     observed_at=(datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(),
                     evidence="Offline fixture: included allowance available; paid usage disabled.",
@@ -159,7 +189,7 @@ class HubTests(unittest.TestCase):
         args.update(overrides)
         return self.hub.observe_usage(**args)
 
-    def submit(self, provider="claude", prompt="Bounded synthetic question.", key="one", project=None):
+    def submit(self, provider="claude-code", prompt="Bounded synthetic question.", key="one", project=None):
         return self.hub.submit(str(project or self.project),
                                [{"provider": provider, "prompt": prompt, "timeout": 5}], key)
 
@@ -233,7 +263,7 @@ class HubTests(unittest.TestCase):
     def test_legacy_observation_schema_migrates_without_changing_jobs(self):
         legacy_state = self.root / "legacy-state"
         legacy_state.mkdir()
-        legacy_row = ("prior", str(self.project), "claude", 100.0, 200.0, 2, "Prior observation", "created")
+        legacy_row = ("prior", str(self.project), "claude-code", 100.0, 200.0, 2, "Prior observation", "created")
         with closing(sqlite3.connect(legacy_state / "jobs.sqlite3")) as c, c:
             c.executescript("""
                 CREATE TABLE observations (
@@ -287,7 +317,7 @@ class HubTests(unittest.TestCase):
         self.observe()
         for value in (1.5, 5.0, "5", True, None, float("nan")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "integer"):
-                self.hub.submit(str(self.project), [{"provider": "claude", "prompt": "Offline.", "timeout": value}],
+                self.hub.submit(str(self.project), [{"provider": "claude-code", "prompt": "Offline.", "timeout": value}],
                                 "invalid-timeout")
         self.launch.assert_not_called()
         self.assertEqual(self.hub.jobs(str(self.project)), [])
@@ -317,8 +347,8 @@ class HubTests(unittest.TestCase):
         self.assertEqual(self.remaining()[second["id"]], 0)
 
     def test_batch_preflight_all_or_none_when_second_observation_missing(self):
-        observation = self.observe("claude")
-        requests = [{"provider": "claude", "prompt": "First."}, {"provider": "grok", "prompt": "Second."}]
+        observation = self.observe("claude-code")
+        requests = [{"provider": "claude-code", "prompt": "First."}, {"provider": "grok", "prompt": "Second."}]
         with self.assertRaises(ValueError):
             self.hub.submit(str(self.project), requests, "two")
         self.assertEqual(self.hub.jobs(str(self.project)), [])
@@ -327,12 +357,12 @@ class HubTests(unittest.TestCase):
         self.assertFalse((self.hub.state / "artifacts").exists())
 
     def test_batch_preflight_all_or_none_when_second_pin_changed(self):
-        self.observe("claude")
+        self.observe("claude-code")
         self.observe("grok")
         self.pins["grok"]["sha256"] = "0" * 64
         self.write_pins()
         with self.assertRaises(ValueError):
-            self.hub.submit(str(self.project), [{"provider": p, "prompt": "Offline."} for p in ("claude", "grok")], "bad-pin")
+            self.hub.submit(str(self.project), [{"provider": p, "prompt": "Offline."} for p in ("claude-code", "grok")], "bad-pin")
         self.assertEqual(self.hub.jobs(str(self.project)), [])
         self.assertEqual(set(self.remaining().values()), {1})
         self.launch.assert_not_called()
@@ -364,11 +394,11 @@ class HubTests(unittest.TestCase):
         self.observe()
         cases = [
             [{"provider": "unknown", "prompt": "Question"}],
-            [{"provider": "claude", "prompt": "Question", "model": "arbitrary"}],
-            [{"provider": "claude", "prompt": "Question", "helper": "arbitrary"}],
-            [{"provider": "claude", "prompt": "Question", "effort": "low"}],
-            [{"provider": "claude", "prompt": "Question", "timeout": float("inf")}],
-            [{"provider": "claude", "prompt": "Question"}, {"provider": "claude", "prompt": "Second"}],
+            [{"provider": "claude-code", "prompt": "Question", "model": "arbitrary"}],
+            [{"provider": "claude-code", "prompt": "Question", "helper": "arbitrary"}],
+            [{"provider": "claude-code", "prompt": "Question", "effort": "low"}],
+            [{"provider": "claude-code", "prompt": "Question", "timeout": float("inf")}],
+            [{"provider": "claude-code", "prompt": "Question"}, {"provider": "claude-code", "prompt": "Second"}],
         ]
         for i, requests in enumerate(cases):
             with self.subTest(requests=requests), self.assertRaises(ValueError):
@@ -398,7 +428,7 @@ class HubTests(unittest.TestCase):
         self.observe()
         batch = self.submit()
         requested = batch["jobs"][0]["model"]
-        self.pins["claude"]["model"] = "unexpected-new-model"
+        self.pins["claude-code"]["model"] = "unexpected-new-model"
         self.write_pins()
         item = self.execute(batch)[0]
         if item["state"] == "returned":
@@ -497,10 +527,10 @@ class HubTests(unittest.TestCase):
         self.launch.assert_called_once()
 
     def test_two_providers_overlap_and_duplicate_worker_does_not_double_dispatch(self):
-        for provider in ("claude", "grok"):
+        for provider in ("claude-code", "grok"):
             self.observe(provider)
         batch = self.hub.submit(str(self.project), [{"provider": p, "prompt": "MODE:SLOW", "timeout": 5}
-                                                    for p in ("claude", "grok")], "parallel")
+                                                    for p in ("claude-code", "grok")], "parallel")
         ids = [job["id"] for job in batch["jobs"]]
         with ThreadPoolExecutor(max_workers=3) as pool:
             list(pool.map(lambda identifier: worker.run_job(self.hub, identifier), [ids[0], ids[1], ids[0]]))

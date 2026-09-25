@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import importlib.util
 import json
 import os
@@ -72,58 +73,70 @@ def model_labels(value):
 def run_job(hub: Hub, job_id: str):
     process = None
     data = None
+    claimed = False
     try:
+        # Model-lock contention must not hold the jobs database hostage.
         with hub.connect() as c:
-            c.execute("BEGIN IMMEDIATE")
-            row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if row is None or row["state"] != "prepared":
-                return
-            if row["cancel_requested"]:
-                hub._update(c, row, state="cancelled", finished_at=now(), submission="not_started")
-                return
-            data = json.loads(row["data"])
-            if data["provider"] in RETIRED:
-                hub._update(c, row, state="blocked", submission="not_started", finished_at=now(),
-                            error=RETIRED[data["provider"]])
-                return
-            observation = c.execute(
-                "SELECT revoked,expires FROM observations WHERE id=? AND provider=? AND project=?",
-                (data["observation_id"], data["provider"], data["project"]),
-            ).fetchone()
-            if observation is None or observation["revoked"]:
-                hub._update(c, row, state="blocked", submission="not_started", finished_at=now(),
-                            error="Usage allowance revoked or missing before worker dispatch")
-                return
-            if data["observation_expires"] <= time.time() or observation["expires"] <= time.time():
-                hub._update(c, row, state="blocked", submission="not_started", error="Usage observation expired before worker dispatch")
-                return
-            pin = hub._pins(data["provider"])
-            if pin["sha256"] != data["helper_sha256"]:
-                raise ValueError("Helper pin changed since this job was prepared")
-            if pin["model"] != data["model"] or pin["effort"] != data["effort"]:
-                raise ValueError("Model or effort changed since this job was prepared")
-            directory = Path(data["evidence_directory"])
-            request = directory / "packet.txt"
-            if digest(request.read_bytes()) != data["packet_sha256"]:
-                raise ValueError("Prepared packet changed; refusing dispatch")
-            manifest = verify_files(directory, data.get("attachments", []))
-            if manifest and manifest_digest(manifest) != data.get("attachment_manifest_sha256"):
-                raise ValueError("Prepared attachment manifest changed; refusing dispatch")
-            # Run the verified bytes, so another project's helper update cannot
-            # silently change this job between validation and Python startup.
-            runner = directory / "pinned_helper.py"
-            helper_bytes = Path(pin["path"]).read_bytes()
-            if digest(helper_bytes) != pin["sha256"]:
-                raise ValueError("Helper changed during preparation")
-            runner.write_bytes(helper_bytes)
-            helper = load_helper(runner)
-            env = helper.clean_environment() if data["provider"] == "claude" else helper.safe_env()
-            output = directory / "provider"
-            command = [sys.executable, "-I", str(runner), "--prompt-file", str(request),
-                       "--output-dir", str(output), "--model", pin["model"],
-                       "--effort", pin["effort"], "--timeout", str(data["timeout"])]
-            data = hub._update(c, row, state="running", started_at=now(),
-                               submission="local_helper_launch_pending", worker_pid=os.getpid())
+            preview = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if preview is None or preview["state"] != "prepared":
+            return
+        prepared = json.loads(preview["data"])
+        provider = "claude-code" if prepared["provider"] == "claude" else prepared["provider"]
+        guard = (nullcontext() if preview["cancel_requested"] or provider in RETIRED else
+                 hub.models.guard_selection(provider, expected=prepared))
+        with guard:
+            with hub.connect() as c:
+                c.execute("BEGIN IMMEDIATE")
+                row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if row is None or row["state"] != "prepared":
+                    return
+                if row["cancel_requested"]:
+                    hub._update(c, row, state="cancelled", finished_at=now(), submission="not_started")
+                    return
+                data = json.loads(row["data"])
+                if data["provider"] in RETIRED:
+                    hub._update(c, row, state="blocked", submission="not_started", finished_at=now(),
+                                error=RETIRED[data["provider"]])
+                    return
+                observation = c.execute(
+                    "SELECT revoked,expires FROM observations WHERE id=? AND provider=? AND project=?",
+                    (data["observation_id"], data["provider"], data["project"]),
+                ).fetchone()
+                if observation is None or observation["revoked"]:
+                    hub._update(c, row, state="blocked", submission="not_started", finished_at=now(),
+                                error="Usage allowance revoked or missing before worker dispatch")
+                    return
+                if data["observation_expires"] <= time.time() or observation["expires"] <= time.time():
+                    hub._update(c, row, state="blocked", submission="not_started", error="Usage observation expired before worker dispatch")
+                    return
+                pin = hub._pins(data["provider"])
+                if pin["sha256"] != data["helper_sha256"]:
+                    raise ValueError("Helper pin changed since this job was prepared")
+                # The outer model guard freezes the validated choice through this
+                # local running claim. Later choices apply to subsequent jobs.
+                directory = Path(data["evidence_directory"])
+                request = directory / "packet.txt"
+                if digest(request.read_bytes()) != data["packet_sha256"]:
+                    raise ValueError("Prepared packet changed; refusing dispatch")
+                manifest = verify_files(directory, data.get("attachments", []))
+                if manifest and manifest_digest(manifest) != data.get("attachment_manifest_sha256"):
+                    raise ValueError("Prepared attachment manifest changed; refusing dispatch")
+                # Run the verified bytes, so another project's helper update cannot
+                # silently change this job between validation and Python startup.
+                runner = directory / "pinned_helper.py"
+                helper_bytes = Path(pin["path"]).read_bytes()
+                if digest(helper_bytes) != pin["sha256"]:
+                    raise ValueError("Helper changed during preparation")
+                runner.write_bytes(helper_bytes)
+                helper = load_helper(runner)
+                env = helper.clean_environment() if data["provider"] in {"claude", "claude-code"} else helper.safe_env()
+                output = directory / "provider"
+                command = [sys.executable, "-I", str(runner), "--prompt-file", str(request),
+                           "--output-dir", str(output), "--model", data["model"],
+                           "--effort", data["effort"], "--timeout", str(data["timeout"])]
+                data = hub._update(c, row, state="running", started_at=now(),
+                                   submission="local_helper_launch_pending", worker_pid=os.getpid())
+            claimed = True
         flags = {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
         with (directory / "helper.stdout.txt").open("wb") as stdout, (directory / "helper.stderr.txt").open("wb") as stderr:
             process = subprocess.Popen(command, cwd=str(directory), env=env, stdin=subprocess.DEVNULL,
@@ -215,8 +228,9 @@ def run_job(hub: Hub, job_id: str):
             except Exception:
                 pass
         with hub.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if row is not None:
+            if row is not None and (claimed or row["state"] == "prepared"):
                 hub._update(c, row, state="delivery_unknown" if process is not None else "blocked",
                             submission="uncertain" if process is not None else "not_started", finished_at=now(),
                             error=f"Worker stopped: {type(exc).__name__}; inspect evidence before retrying")
@@ -234,9 +248,11 @@ def main():
         lifetime_job = contain_worker()
     except Exception:
         with hub.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
             for job in jobs:
                 row = c.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
-                hub._update(c, row, state="blocked", submission="not_started", error="Could not establish Windows descendant lifetime containment")
+                if row is not None and row["state"] == "prepared":
+                    hub._update(c, row, state="blocked", submission="not_started", error="Could not establish Windows descendant lifetime containment")
         return 1
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
         list(pool.map(lambda job: run_job(hub, job), jobs))

@@ -1,6 +1,6 @@
 # Antigravity integration and Gemini CLI migration
 
-Review Hub **0.4.0 beta** gives Antigravity its own automated provider ID, `antigravity`, and retires this hub's personal-subscription `gemini-cli` route. The enabled automated routes are Claude Code, Grok Build, and Antigravity. Gemini browser, Desktop, and Spark remain separate coordinator-operated app handoffs.
+Review Hub **v0.4 introduced this migration; v0.5 updates its setup below**. Antigravity has its own automated provider ID, `antigravity`, and this hub's personal-subscription `gemini-cli` route is retired. The enabled automated routes are Claude Code, Grok Build, and Antigravity. Gemini browser, Desktop, and Spark remain separate coordinator-operated app handoffs.
 
 Google's May 19 announcement said that Gemini CLI would stop serving Google AI Pro, Ultra, and free individual requests on **June 18, 2026**, with those users moving to Antigravity CLI. Its enterprise and paid API routes are a separate matter. This hub does not change to an API key or Google Cloud billing to work around the individual transition. See [Google's transition announcement](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/) and [official migration guide](https://antigravity.google/docs/cli/gcli-migration/).
 
@@ -16,7 +16,7 @@ The current Windows setup was inspected with the official native CLI **1.2.7** a
 
 For an individual-subscription checker, inspect the effective configuration and current service-reported quota. The observed configuration had `useG1Credits:false`, an empty `modelProvider`, and no GCP configuration. Keep credit fallback disabled, exclude API credentials and endpoint overrides, and stop when included usage is unavailable or cannot be verified. A local pin proves only that reviewed helper bytes match; it does not prove entitlement or a remaining allowance. [Authentication](https://antigravity.google/docs/cli/install/), [credit controls](https://antigravity.google/docs/cli/credits/), and [usage reporting](https://antigravity.google/docs/cli/commands/usage/) describe these distinct mechanisms.
 
-The actual model catalog exposed `gemini-3.8-flash-high` and `gemini-3.1-pro-high`. The intended first checker setting is `gemini-3.8-flash-high` with `high` effort, subject to matching effective configuration and fresh included quota. This is a CLI selection, not a claim that it is identical to the consumer app's Extended mode or universally superior for every task.
+The actual model catalog exposed `gemini-3.8-flash-high` and `gemini-3.1-pro-high`. The user chooses the model and effort after current account discovery; old examples do not set defaults. This is a CLI selection, not a claim that it is identical to the consumer app's Extended mode or universally superior for every task.
 
 On the inspected build, put global flags before a subcommand:
 
@@ -31,23 +31,23 @@ Read-only reports such as `/config` and `/usage` are separate from review packet
 
 These steps use the scripts in `scripts/`. Nothing below sends a review packet until a real `submit`, and nothing reads or copies credentials.
 
-1. Install the official Antigravity CLI for Windows ([installation guide](https://antigravity.google/docs/cli/install/)) and check its Google signature. The helper accepts only the reviewed 1.2.7 build, SHA-256 `162607893eaacaf7b4a34bcd0bc3978342c6707b0340f96040f0139ac904dd22`; any other build is refused until the helper is re-reviewed and re-pinned. The CLI's background self-updater replaces its own binary in place, in interactive and print modes alike, so point the configuration at a private copy of the reviewed build, and note that the helper launches every session with `AGY_CLI_DISABLE_AUTO_UPDATE=true` (only the literal `true` disables it). If a build was replaced anyway, restore the reviewed copy; the helper refuses to run anything else.
+1. Install the current official Antigravity CLI for Windows ([installation guide](https://antigravity.google/docs/cli/install/)). The helper verifies its Google publisher signature and required capabilities each run. Compatible newer versions are accepted without code changes. `AGY_CLI_DISABLE_AUTO_UPDATE=true` keeps the executable stable within a single checker process; it does not pin the installed app permanently. See [v0.5 model and update behavior](models-and-updates-v0.5.md).
 
 2. Create the dedicated profile and configuration. Both paths must be new; nothing is launched:
 
    ```powershell
-   .\.venv\Scripts\python.exe scripts\configure_antigravity.py --exe 'C:\review-tools\antigravity\1.2.7\agy.exe' --profile "$env:USERPROFILE\.review-hub\antigravity-home"
+   .\.venv\Scripts\python.exe scripts\configure_antigravity.py --exe 'C:\review-tools\antigravity\agy.exe' --profile "$env:USERPROFILE\.review-hub\antigravity-home"
    ```
 
    This writes `%USERPROFILE%\.review-hub\antigravity.json` and a profile that contains only the no-credit settings, the `review-hub-checker` agent and the fixed deny hook.
 
-3. Sign in once, interactively, in your own terminal. Complete the official Google sign-in, then exit the session. When the session ends, the script restores the reviewed settings (an interactive session records its folder under `trustedWorkspaces`) and re-verifies the runtime pin and profile:
+3. Sign in once, interactively, in your own terminal. Complete the official Google sign-in, then exit the session. When the session ends, the script restores the reviewed settings (an interactive session records its folder under `trustedWorkspaces`) and re-verifies the runtime signature, capabilities and profile:
 
    ```powershell
    .\.venv\Scripts\python.exe scripts\antigravity_login.py
    ```
 
-4. Run the non-generating readiness check. It reads the CLI's ten local reports (`config`, `permissions`, `hooks`, `skills`, `usage`, `credits`, `model`, `effort`, `models`, `agents`), requires included Gemini quota and `useG1Credits:false`, and sends no prompt:
+4. Run the non-generating readiness check. It reads the CLI's effective configuration, guard and quota reports, requires included Gemini quota and `useG1Credits:false`, and sends no prompt:
 
    ```powershell
    .\.venv\Scripts\python.exe scripts\antigravity_check.py --inspect --output-dir 'C:\exact\private-state\antigravity-inspect-01'
@@ -64,13 +64,11 @@ These steps use the scripts in `scripts/`. Nothing below sends a review packet u
    ```json
    "antigravity": {
      "path": "C:/path/to/review-hub/scripts/antigravity_check.py",
-     "sha256": "<lowercase hash from the command above>",
-     "model": "gemini-3.8-flash-high",
-     "effort": "high"
+     "sha256": "<lowercase hash from the command above>"
    }
    ```
 
-   The helper also accepts `gemini-3.1-pro-high`; `high` is its only effort setting. The repository's `.gitattributes` keeps the helper LF on checkout, so the pin does not change with a Windows line-ending setting.
+   Run `refresh_models` to discover supported Gemini IDs and each model's actual effort options, then ask the user and call `select_model`. The repository's `.gitattributes` keeps the helper LF on checkout, so the pin does not change with a Windows line-ending setting.
 
 6. Before each `submit`, record a fresh `observe_usage` for `antigravity` from a current readiness receipt. A pin proves only that the helper bytes match; it does not prove quota.
 
@@ -84,7 +82,7 @@ CLI initialization may report a selected model without proving the response back
 
 ## Tool-denial layers and their limits
 
-The installed CLI advertises its full 57-tool catalog even for the custom agent, so the helper does not claim a tool-free agent. It layers these controls, none of which is an operating-system sandbox:
+The originally inspected CLI advertised its full 57-tool catalog; current versions may add built-in tools, and the CLI still advertises a global catalog even for the custom agent, so the helper does not claim a tool-free agent. It layers these controls, none of which is an operating-system sandbox:
 
 - Resource deny rules for file, command, URL and MCP access, verified in the effective `/config` and `/permissions` reports on every run.
 - A fixed `PreToolUse` hook that matches every tool and returns a deny decision.
@@ -93,4 +91,4 @@ The installed CLI advertises its full 57-tool catalog even for the custom agent,
 
 Development probes confirmed the hook's denial for a file read. Command, browser/web, subagent, scheduling and MCP tool families have not been probed; treat them as untested rather than covered.
 
-Before claiming the Antigravity checker ready, verify the effective custom agent, permissions, ambient-context restrictions, a bounded stream round trip, and the hub's returned receipt. Application controls are not an operating-system sandbox. See the [v0.4 validation record](validation-v0.4-2026-09-22.md) for what has actually been checked.
+Before claiming the Antigravity checker ready, verify the effective custom agent, permissions, ambient-context restrictions, a bounded stream round trip, and the hub's returned receipt. Application controls are not an operating-system sandbox. See the [v0.4 validation checkpoint](validation-v0.4-2026-09-22.md) for what had been checked at that release.

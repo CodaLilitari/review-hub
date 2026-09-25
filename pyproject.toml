@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coda-review-hub"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local subscription-first coordination of bounded AI reviews"
 requires-python = ">=3.11"
 dependencies = ["mcp==2.2.0", "pywin32==312; sys_platform == 'win32'"]

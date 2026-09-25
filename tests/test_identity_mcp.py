@@ -5,9 +5,12 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 from mcp import Client
+from coda_review_hub.core import Hub
 
+import test_core
 import test_mcp
 
 
@@ -18,8 +21,11 @@ class MCPIdentityTests(unittest.IsolatedAsyncioTestCase):
         # Model the public distribution with no personal seed or helper pins.
         source = self.root / "public-package" / "src" / "coda_review_hub"
         source.mkdir(parents=True)
-        for name in ("__init__.py", "attachments.py", "identity.py", "core.py", "worker.py", "mcp_server.py", "cli.py"):
+        for name in ("__init__.py", "attachments.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py", "cli.py"):
             shutil.copy2(test_mcp.PACKAGE_ROOT / "src" / "coda_review_hub" / name, source / name)
+        # Synthetic catalog choices must not load the private identity seed.
+        with patch.object(test_core.core, "BASE", source.parents[1]):
+            test_core.seed_models(Hub(self.identity_state))
         self.params = self.params.model_copy(update={
             "args": ["-c", test_mcp.GUARDED_SERVER, str(self.identity_state)],
             "env": dict(self.params.env, PYTHONPATH=str(source.parent)),

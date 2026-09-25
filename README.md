@@ -10,11 +10,11 @@ The coordinator chooses relevant reviewers and verifies consequential findings. 
 
 ## Maturity and scope
 
-**v0.4 is beta software:** an early, Windows-first implementation with synthetic test fixtures. It is not a turnkey installer for provider products, a billing service, or a universally authenticated multi-agent framework. Other platforms need separate validation.
+**v0.5 is beta software:** an early, Windows-first implementation with synthetic test fixtures. It is not a turnkey installer for provider products, a billing service, or a universally authenticated multi-agent framework. Other platforms need separate validation.
 
 **Repository access (2026-09-20):** GitHub currently requires sign-in to view this repository. Its public visibility setting does not establish anonymous access.
 
-Three automated provider slots, `claude`, `grok` and `antigravity`, can use **locally supplied, reviewed subscription helpers**. The former `gemini-cli` route is retired; historical records remain readable. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
+Three automated provider slots, `claude-code`, `grok` and `antigravity`, can use **locally supplied, reviewed subscription helpers**. The former `gemini-cli` route is retired; historical records remain readable. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
 
 The current transport is local stdio MCP plus CLI wrappers. ACP session management, provider-session resume, autonomous project editing, automatic image generation, and a persistent background service are outside the implemented scope. Provider capability is distinct from hub integration.
 
@@ -31,13 +31,21 @@ py -3 -m venv .venv
 
 The command entry points are `coda-review` and `coda-review-mcp`. Register the latter, or the environment's Python executable with `-m coda_review_hub.mcp_server`, with an MCP client that supports local stdio servers. Choose one private state directory outside the repository and use it consistently across clients. No HTTP listener is started.
 
-The repository ships `helpers.example.json` and an Antigravity helper under validation; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified hashes and supported model/effort settings. The example's zero hashes are placeholders, not usable pins. Read the [adapter contract](docs/adapter-contract.md) and [Antigravity setup and boundaries](docs/antigravity-v0.4.md) before enabling a helper.
+The repository ships `helpers.example.json` and generic helpers for Claude Code, Grok Build, and Antigravity; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified helper-source hashes; model/effort choices are saved separately after discovery. The example's zero hashes are placeholders, not usable pins. Read the [adapter contract](docs/adapter-contract.md) and [Antigravity setup and boundaries](docs/antigravity-v0.4.md) before enabling a helper.
 
-## Antigravity replacement (v0.4)
+## Model setup and compatible updates (v0.5)
 
-Antigravity has its own `antigravity` provider ID. The upgrade does not redirect old Gemini requests, reuse their entitlement observations, or reinterpret their saved replies. Review the new helper and runtime, verify the current account's included usage and disabled paid fallback, then create a separate helper pin and usage observation. The retired Gemini helper is retained for historical reference; it is not an active dispatch route.
+On first use, discover the models and thinking levels exposed through the current account and installed client, ask the user, and save that choice outside Git. Every new automated request refreshes the catalog. New/removed models, changed effort options, and changed resolved aliases prompt again; compatible app updates and cosmetic labels do not. Claude Code discovery includes a nonfatal official-release advisory because older clients can omit newer account models. CLI `choose-model` asks interactively. Consumer apps require actual picker observations. See [model setup](docs/models-and-updates-v0.5.md).
 
-A development diagnostic using the official Antigravity CLI 1.2.7 returned a nonsensitive synthetic response with `gemini-3.8-flash-high` selected and no observed tool calls. A live review through the guarded Review Hub helper is recorded in the [v0.4 validation record](docs/validation-v0.4-2026-09-22.md) once it has run. A successful diagnostic does not establish tool isolation, safe handling of private packets, or a verified backend model identity. The example uses `gemini-3.8-flash-high` with `high` effort; verify catalog availability and entitlement on the account used for deployment.
+Claude Code has the explicit `claude-code` route; `claude` remains a legacy CLI alias. `claude-desktop` and `claude-cowork` are separate app handoffs. No app entitlement is inferred from another surface.
+
+Official app versions are observations rather than frozen compatibility requirements. Current Windows publisher signatures, required capabilities and billing controls are checked each run; our own helper source remains hash-verified. Apps, installers, profiles and credentials stay outside version control.
+
+## Antigravity replacement
+
+Antigravity has its own `antigravity` provider ID. The upgrade does not redirect old Gemini requests, reuse their entitlement observations, or reinterpret their saved replies. Review the new helper and runtime, verify the current account's included usage and disabled paid fallback, then create a separate helper pin and usage observation. The deprecated Gemini helper implementation has been removed; only retirement errors and historical record compatibility remain.
+
+A development diagnostic using the official Antigravity CLI 1.2.7 returned a nonsensitive synthetic response with `gemini-3.8-flash-high` selected and no observed tool calls. A live review through the guarded Review Hub helper is recorded in the [v0.4 validation record](docs/validation-v0.4-2026-09-22.md) once it has run. A successful diagnostic does not establish tool isolation, safe handling of private packets, or a verified backend model identity. The current user selects from their own account catalog; examples do not establish availability or entitlement.
 
 The integration wraps the CLI through the hub's existing local MCP interface. It implements no Antigravity ACP sessions. Earlier ACP initialization experiments remain historical protocol probes. See [Antigravity migration, subscription checks, and validation boundaries](docs/antigravity-v0.4.md).
 
@@ -53,13 +61,17 @@ Start with `identity_status`. If local choices already exist, inspect and reuse 
 
 An explicit anonymous choice is supported. It allows neutral introductions without inventing identities. The first-run requirement is a deliberate choice, not compulsory naming. Display names never establish account access, model identity, billing entitlement, or authority to send material.
 
-## Eleven MCP tools
+## Fifteen MCP tools
 
 | Tool | Purpose |
 |---|---|
 | `identity_status` | Inspect local identity setup and whether a choice is needed. |
 | `configure_identity` | Persist confirmed names or an explicit anonymous choice locally. |
 | `routes` | Inspect route configuration and readiness limits without contacting a provider. |
+| `model_status` | Inspect saved catalog and user choice. |
+| `refresh_models` | Query current CLI account options without a model prompt. |
+| `record_models` | Record a signed-in app's visible options. |
+| `select_model` | Save the user's confirmed model and thinking level. |
 | `observe_usage` | Record a sourced, recent included-usage observation. |
 | `submit` | Prepare a bounded automated batch and return job IDs. |
 | `jobs` | Read project-scoped status and reconcile interrupted work. |
@@ -98,4 +110,4 @@ Tests use synthetic inputs and local fake helpers; they do not establish live pr
 
 License information is pending the repository owner's choice.
 
-Current checkpoint: the [v0.4 validation record](docs/validation-v0.4-2026-09-22.md). The [v0.3 beta validation record](docs/validation-v0.3-2026-09-20.md) covers the earlier release and does not establish v0.4 validation. Setup steps and remaining checks are in the [Antigravity notes](docs/antigravity-v0.4.md).
+Current checkpoint: the [v0.5 validation record](docs/validation-v0.5-2026-09-25.md). The [v0.4 validation record](docs/validation-v0.4-2026-09-22.md) is historical. The [v0.3 beta validation record](docs/validation-v0.3-2026-09-20.md) covers the earlier release and does not establish v0.4 validation. Setup steps and remaining checks are in the [Antigravity notes](docs/antigravity-v0.4.md).

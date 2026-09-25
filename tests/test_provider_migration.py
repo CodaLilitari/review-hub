@@ -57,7 +57,7 @@ class ProviderMigrationTests(unittest.TestCase):
         return profile, self.hub.identity.path.read_bytes()
 
     def enable_synthetic_antigravity(self):
-        self.fixture.pins["antigravity"] = dict(self.fixture.pins["grok"], model="fixture-antigravity", effort="high")
+        self.fixture.pins["antigravity"] = dict(self.fixture.pins["grok"], model="fixture-antigravity", effort="fixture-high")
         self.fixture.write_pins()
 
     def install_receipt_helper(self):
@@ -142,9 +142,21 @@ class ProviderMigrationTests(unittest.TestCase):
     def legacy_cli_job(self, *, completed=False):
         """Create real synthetic records with the pre-transition route vocabulary."""
         self.fixture.pins["gemini-cli"] = dict(self.fixture.pins["grok"], model="fixture-legacy-gemini")
+        # Add the retired route's synthetic catalog to this fixture only, so
+        # dispatch still exercises native discovery and explicit model choice.
+        grok_entry = '{"id": "fixture-grok", "efforts": ["xhigh"]},'
+        legacy_entry = '{"id": "fixture-legacy-gemini", "efforts": ["xhigh"]},'
+        self.assertEqual(test_core.FAKE_HELPER.count(grok_entry), 1)
+        legacy_helper = test_core.FAKE_HELPER.replace(grok_entry, grok_entry + "\n                " + legacy_entry)
+        self.fixture.fake.write_bytes(legacy_helper.encode("utf-8"))
+        for pin in self.fixture.pins.values():
+            pin["sha256"] = core.digest(self.fixture.fake.read_bytes())
         self.fixture.write_pins()
-        with patch.object(core, "AUTO", {"claude", "grok", "gemini-cli"}), \
+        with patch.object(core, "AUTO", core.AUTO | {"gemini-cli"}), \
                 patch.object(core, "RETIRED", {}), patch.object(worker, "RETIRED", {}):
+            catalog = self.hub.refresh_models("gemini-cli")
+            self.hub.select_model("gemini-cli", "fixture-legacy-gemini", "xhigh",
+                                  catalog["catalog"]["fingerprint"], "Explicit synthetic legacy model choice.")
             observation = self.fixture.observe("gemini-cli", jobs=2)
             batch = self.fixture.submit(provider="gemini-cli", key="legacy-cli")
             if completed:

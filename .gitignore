@@ -45,3 +45,12 @@ __pycache__/
 htmlcov/
 build/
 dist/
+
+# Provider apps are installed separately, not checked in
+*.exe
+*.msi
+*.msix
+*.msixbundle
+node_modules/
+runtime/
+runtimes/

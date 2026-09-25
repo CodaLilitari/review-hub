@@ -21,6 +21,8 @@ from pathlib import Path
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 from coda_review_hub.identity import IdentityStore
+from coda_review_hub.core import Hub
+import test_core
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +96,7 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
         # anonymous synthetic choice. Identity-specific tests use another state.
         for name in ("state", "cli-state", "disconnect-state"):
             IdentityStore(self.root / name).configure(evidence="Anonymous identity chosen for this offline test fixture.")
+            test_core.seed_models(Hub(self.root / name))
 
     async def test_list_tools_and_read_routes(self) -> None:
         async with Client(self.params, read_timeout_seconds=15) as client:
@@ -102,12 +105,14 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(tools), {
                 "routes", "observe_usage", "submit", "jobs", "result", "cancel", "handoff",
                 "record_handoff_result", "attachment_files", "identity_status", "configure_identity",
+                "model_status", "refresh_models", "record_models", "select_model",
             })
             self.assertIn("attestation", tools["observe_usage"].description)
             response = await client.call_tool("routes")
             self.assertFalse(response.is_error)
             serialized = json.dumps(response.structured_content)
-            self.assertIn("claude", serialized)
+            self.assertIn("claude-code", serialized)
+            self.assertIn("claude-desktop", serialized)
             self.assertIn("grok", serialized)
 
     async def test_missing_usage_blocks_dispatch_without_creating_jobs(self) -> None:
@@ -178,6 +183,53 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(observed.structured_content["job"]["submission"], "coordinator_observed_response")
             self.assertIn("did not send", observed.structured_content["delivery_basis"])
 
+    async def test_model_picker_requires_choice_and_changed_catalog_reconfirmation(self) -> None:
+        state = self.root / "first-model-state"
+        IdentityStore(state).configure(evidence="Anonymous identity for a synthetic model-picker test.")
+        params = self.params.model_copy(update={"args": ["-c", GUARDED_SERVER, str(state)]})
+        provider = "claude-desktop"
+        async with Client(params, read_timeout_seconds=15) as client:
+            initial = await client.call_tool("model_status", {"provider": provider})
+            self.assertFalse(initial.is_error)
+            self.assertTrue(initial.structured_content["selection_required"])
+            refresh = await client.call_tool("refresh_models", {"provider": provider})
+            self.assertFalse(refresh.is_error)
+            self.assertFalse(refresh.structured_content["sent"])
+            model = {"id": "fixture-desktop", "label": "Synthetic Desktop model", "efforts": ["default"]}
+            recorded = await client.call_tool("record_models", {
+                "provider": provider, "models": [model],
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "evidence": "Synthetic signed-in app picker observation; no real app was inspected.",
+            })
+            self.assertFalse(recorded.is_error)
+            status = recorded.structured_content
+            self.assertEqual(status["catalog"]["source"], "observed_app")
+            self.assertTrue(status["selection_required"])
+            selected = await client.call_tool("select_model", {
+                "provider": provider, "model": model["id"], "effort": "default",
+                "catalog_fingerprint": status["catalog"]["fingerprint"],
+                "evidence": "Explicit synthetic user selected this model and default effort.",
+            })
+            self.assertFalse(selected.is_error)
+            self.assertFalse(selected.structured_content["selection_required"])
+            prepared = await client.call_tool("handoff", {
+                "project": str(self.project), "provider": provider, "prompt": "Synthetic handoff only.",
+            })
+            self.assertFalse(prepared.is_error)
+            self.assertEqual(prepared.structured_content["job"]["model"], model["id"])
+            changed = await client.call_tool("record_models", {
+                "provider": provider, "models": [{**model, "efforts": ["default", "extended"]}],
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "evidence": "Synthetic app picker now exposes another thinking choice.",
+            })
+            self.assertFalse(changed.is_error)
+            self.assertEqual(changed.structured_content["reason"], "catalog_changed")
+            self.assertTrue(changed.structured_content["selection_required"])
+            blocked = await client.call_tool("handoff", {
+                "project": str(self.project), "provider": provider, "prompt": "Must wait for a new choice.",
+            })
+            self.assertTrue(blocked.is_error)
+
     def test_cli_routes_and_invalid_payload(self) -> None:
         def invoke(*args):
             return subprocess.run(
@@ -209,14 +261,24 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
         package = self.root / "fixture-package"
         source = package / "src" / "coda_review_hub"
         source.mkdir(parents=True)
-        for name in ("__init__.py", "attachments.py", "identity.py", "core.py", "worker.py", "mcp_server.py"):
+        for name in ("__init__.py", "attachments.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py"):
             shutil.copy2(PACKAGE_ROOT / "src" / "coda_review_hub" / name, source / name)
         helper = package / "offline_helper.py"
         shutil.copy2(Path(__file__).with_name("mcp_disconnect_helper.py"), helper)
+        with helper.open("a", encoding="utf-8") as fixture:
+            fixture.write('''
+
+def discover_models():
+    return {"source": "official_cli", "runtime_version": "offline-fixture",
+            "evidence": "Synthetic offline metadata only; no provider is contacted.", "models": [
+                {"id": "fixture-opus", "efforts": ["max", "low"]},
+                {"id": "fixture-grok", "efforts": ["xhigh"]},
+                {"id": "fixture-antigravity", "efforts": ["xhigh", "fixture-high"]}]}
+''')
         sha = hashlib.sha256(helper.read_bytes()).hexdigest()
         pins = {
             provider: {"path": str(helper), "sha256": sha, "model": "offline-fixture", "effort": "max"}
-            for provider in ("claude", "grok")
+            for provider in ("claude-code", "grok")
         }
         (package / "helpers.json").write_text(json.dumps(pins), encoding="utf-8")
         state = self.root / "disconnect-state"

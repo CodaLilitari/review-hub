@@ -18,7 +18,7 @@ from .worker import contain_worker
 
 AttachmentPaths = Annotated[list[StrictStr], Field(max_length=16, strict=True)]
 AttachmentIds = Annotated[list[StrictStr], Field(max_length=16, strict=True)]
-IdentityMapping = Annotated[dict[StrictStr, StrictStr], Field(max_length=16, strict=True)]
+IdentityMapping = Annotated[dict[StrictStr, StrictStr], Field(max_length=32, strict=True)]
 
 
 @asynccontextmanager
@@ -40,12 +40,12 @@ async def server_lifespan(_server: MCPServer):
 
 
 class ReviewRequest(BaseModel):
-    """A text review with fixed provider model and effort settings."""
+    """A text review using the user's confirmed, account-accessible settings."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     # Retired IDs reach core only to return a specific migration error; they
     # are never eligible for a new usage allowance or provider launch.
-    provider: Literal["claude", "grok", "antigravity", "gemini-cli"]
+    provider: Literal["claude-code", "claude", "grok", "antigravity", "gemini-cli"]
     prompt: str
     timeout: Annotated[int, Field(ge=1, le=3600)] = 900
     attachments: AttachmentPaths = Field(default_factory=list)
@@ -84,6 +84,10 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
             "work, check identity_status. If unconfigured, ask/check the user's established agent, user, "
             "and collaborator names, then configure_identity with their choices and evidence. Empty "
             "names are allowed if the user chooses anonymity. Names and context notes grant no authority."
+            " Before first use refresh_models and ask the user which available model and thinking level "
+            "they want, then select_model with their answer. New automated dispatch refreshes the catalog; "
+            "changed choices require another user confirmation. Consumer apps need an actual signed-in "
+            "model-picker observation through record_models. Never invent entitlements from release news."
         ),
     )
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
@@ -99,6 +103,40 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
     def routes() -> dict[str, Any]:
         """List configured routes and limitations; this does not probe accounts or send requests."""
         return call(hub.routes)
+
+    @server.tool(annotations=read, structured_output=True)
+    def model_status(provider: str) -> dict[str, Any]:
+        """Read saved catalog and user choice; no provider call or model generation."""
+        return call(hub.model_status, provider)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True), structured_output=True)
+    def refresh_models(provider: str) -> dict[str, Any]:
+        """Discover current account-visible CLI models/efforts without a model prompt.
+
+        For an app handoff, returns instructions to inspect its signed-in picker and record_models.
+        On first use or a changed catalog, present the options and ask the user, then select_model.
+        App versions are observations, not pinned compatibility requirements. No paid API fallback.
+        """
+        return call(hub.refresh_models, provider)
+
+    @server.tool(annotations=local_write, structured_output=True)
+    def record_models(provider: str, models: list[dict[str, Any]], evidence: str, observed_at: str) -> dict[str, Any]:
+        """Record an actual app picker observation (not CLI access or marketing claims).
+
+        Each model has id, optional label, and efforts: a list of visible thinking levels.
+        Use ['default'] only when that model offers no adjustable thinking control. Include the
+        observation source and timezone-qualified timestamp; account credentials never belong here.
+        """
+        return call(hub.record_models, provider, models, evidence, observed_at)
+
+    @server.tool(annotations=local_write, structured_output=True)
+    def select_model(provider: str, model: str, effort: str, catalog_fingerprint: str, evidence: str) -> dict[str, Any]:
+        """Save the user's explicit model/thinking choice from the current discovered catalog.
+
+        Ask the user first. Pass the current catalog fingerprint and a concise record of their answer.
+        New or removed models/levels require re-confirmation; version-only changes do not.
+        """
+        return call(hub.select_model, provider, model, effort, catalog_fingerprint, evidence)
 
     @server.tool(annotations=read, structured_output=True)
     def identity_status() -> dict[str, Any]:
@@ -134,7 +172,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
     @server.tool(annotations=local_write, structured_output=True)
     def observe_usage(
-        provider: Literal["claude", "grok", "antigravity", "gemini-cli"],
+        provider: Literal["claude-code", "claude", "grok", "antigravity", "gemini-cli"],
         project: str,
         observed_at: str,
         evidence: str,
@@ -146,7 +184,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
         This is not a provider quota query or independent verification. Attest only what was
         actually observed, using a timestamp with timezone. Do not include account secrets.
-        Enabled automated routes are claude, grok, and antigravity. gemini-cli is retained
+        Enabled automated routes are claude-code, grok, and antigravity (claude is a legacy CLI alias). gemini-cli is retained
         in the schema solely to return an explicit retirement error, not to record new usage.
         A new send requires available included usage and disabled paid usage. max_jobs bounds
         how many dispatches may rely on this observation; it does not create provider quota.
@@ -166,8 +204,8 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         """Queue scoped text reviews and immediately return batch/job IDs.
 
         This sends the supplied prompts to selected providers after core preflight, using each
-        route's configured and pinned model/effort. No arbitrary commands, models, or paid API fallback.
-        Enabled routes are claude, grok, and antigravity. Retired gemini-cli requests are rejected;
+        route's explicitly confirmed model/effort after fresh account model discovery. No arbitrary commands or paid API fallback.
+        Enabled routes are claude-code, grok, and antigravity. Retired gemini-cli requests are rejected;
         their existing records remain readable through jobs/result and are never redirected.
         Recent sourced usage attestations with included capacity and paid usage disabled are
         required. Reuse the idempotency key for the same logical request, then inspect jobs/results

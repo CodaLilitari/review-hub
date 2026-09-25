@@ -1,4 +1,4 @@
-"""Offline v0.3 route contracts; synthetic helpers and app observations only."""
+"""Offline route and model-choice contracts; synthetic helpers/app observations only."""
 
 import json
 from datetime import datetime, timezone
@@ -15,7 +15,7 @@ import test_mcp
 from coda_review_hub import core, worker
 
 
-NEW_HANDOFFS = {"gemini-desktop", "gemini-spark", "meta-ai", "meta-muse"}
+NEW_HANDOFFS = {"claude-desktop", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse"}
 
 
 class ProviderRouteTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class ProviderRouteTests(unittest.TestCase):
         listing = self.hub.routes()
         routes = {route["provider"]: route for route in listing["routes"]}
         self.assertEqual(set(routes), core.AUTO | set(core.RETIRED) | set(core.HANDOFF))
-        self.assertEqual(listing["route_counts"], {"automated": 3, "coordinator_handoff": 10, "retired": 1})
+        self.assertEqual(listing["route_counts"], {"automated": 3, "coordinator_handoff": 11, "retired": 1})
         self.assertIn("3 automated", listing["limits"])
         for provider in NEW_HANDOFFS | {"gemini"}:
             with self.subTest(provider=provider):
@@ -47,6 +47,8 @@ class ProviderRouteTests(unittest.TestCase):
         self.assertIsNone(cli["effort"])
         self.assertIn("reviewed local helper", cli["next"])
         self.assertIn("consumer app access does not establish", cli["entitlement"])
+        self.assertEqual(routes["claude-code"]["transport"], "cli")
+        self.assertIn("Cowork is a separate", routes["claude-desktop"]["instructions"])
 
     def test_antigravity_without_reviewed_pin_is_blocked_before_launch(self):
         self.observe("antigravity")
@@ -193,8 +195,8 @@ class ProviderInterfaceTests(unittest.IsolatedAsyncioTestCase):
             tools = {tool.name: tool.model_dump(by_alias=True) for tool in (await client.list_tools()).tools}
             schema = tools["submit"]["inputSchema"]
             self.assertEqual(schema["properties"]["requests"]["maxItems"], 3)
-            self.assertEqual(set(schema["$defs"]["ReviewRequest"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED))
-            self.assertEqual(set(tools["observe_usage"]["inputSchema"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED))
+            self.assertEqual(set(schema["$defs"]["ReviewRequest"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED) | set(core.LEGACY_AUTO))
+            self.assertEqual(set(tools["observe_usage"]["inputSchema"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED) | set(core.LEGACY_AUTO))
             receipt = tools["record_handoff_result"]["inputSchema"]
             for field in ("observed_model", "observed_mode"):
                 self.assertEqual(receipt["properties"][field]["type"], "string")

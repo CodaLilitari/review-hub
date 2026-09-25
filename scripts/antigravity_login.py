@@ -24,10 +24,11 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="reviewhub-antigravity-login-") as temp:
         work = Path(temp)
         command, env = adapter.prepare_runtime(config, work)
+        runtime = adapter.inspect_runtime(config, work, env)
         try:
             # Explicitly invoked interactive login only. No background auth retry.
-            code = subprocess.call(command + ["--agent", adapter.AGENT, "--model", adapter.MODEL,
-                                              "--effort", "high"], cwd=str(work), env=env, shell=False)
+            adapter.assert_runtime_unchanged(config, runtime)
+            code = subprocess.call(command + ["--agent", adapter.AGENT], cwd=str(work), env=env, shell=False)
         finally:
             # An interactive session can record its temporary folder under
             # trustedWorkspaces. These settings are helper-owned: restore the
@@ -35,9 +36,11 @@ def main(argv=None):
             adapter.no_links(settings_path)
             adapter.write_json(settings_path, adapter.settings())
     # Fail loudly here, not at the next review, if the runtime or profile drifted.
-    adapter.load_config(args.config)
+    if adapter.load_config(args.config) != config:
+        raise ValueError("Antigravity configuration changed during sign-in")
+    adapter.assert_runtime_unchanged(config, runtime)
     adapter.check_profile(profile)
-    print(json.dumps({"session_exit_code": code, "runtime_pin_verified": True,
+    print(json.dumps({"session_exit_code": code, "runtime": runtime, "runtime_trust_verified": True,
                       "profile_checked": True, "settings_restored": True}))
     return code
 

@@ -18,7 +18,7 @@ This is not a native file upload. Binary images and PDFs are refused on the auto
 
 Grok has a specific preprocessing concern: published [prompt-parser source](https://github.com/xai-org/grok-build/blob/4247f661689354b831191f11eeeac8424993fe3d/crates/codegen/xai-grok-shell/src/session/prompt_parser.rs) expands literal `@file` references before model tool permissions. `--verbatim` alone does not stop that source path. Text packets containing an at-sign are encoded with literal Unicode escapes and retained as `.txt`; original snapshots remain separate. The [headless parser](https://github.com/xai-org/grok-build/blob/4247f661689354b831191f11eeeac8424993fe3d/crates/codegen/xai-grok-pager/src/headless/cli.rs) treats `.txt` as text. Changing it to `.json` or `--prompt-json` would decode escapes before collection and requires a new safety review. This source-based guard is not proof of every behavior of every provider version.
 
-Gemini CLI also preprocesses literal `@file` references before normal tool policy. Its text helper JSON-encodes the full request with literal Unicode escapes for every at-sign, retaining original and transmitted hashes. See [Gemini CLI restrictions](gemini-meta-v0.3.md#restrictions-and-evidence). This is embedded source text, not native image or file transport.
+The retired Gemini CLI experiment also required protection against `@file` preprocessing. Its archived behavior is described in the [historical Gemini CLI restrictions](gemini-meta-v0.3.md#restrictions-and-evidence); those removed helper scripts are not a current setup route. The current automated Google route is [Antigravity](antigravity-v0.4.md), with separate controls and discovery.
 
 ## Native app handoffs
 

@@ -4,11 +4,19 @@ Review Hub's automated routes are extension points for reviewed local Python hel
 
 ## Configuration and trust
 
-Use `helpers.example.json` as a schema example. Put actual settings in ignored `helpers.local.json`. Each configured provider entry contains an absolute helper `path`, its SHA-256 `sha256`, and explicit `model` and `effort` settings. These paths identify local reviewed code; they are not downloaded automatically. Example values must never be treated as ready configuration.
+Use `helpers.example.json` as a schema example. Put actual settings in ignored `helpers.local.json`. Each configured provider entry contains an absolute helper `path` and its SHA-256 `sha256`. Model and effort choices are confirmed after discovery and saved separately in private state; legacy pin fields cannot select them. These paths identify local reviewed code; they are not downloaded automatically. Example values must never be treated as ready configuration.
 
-The current beta worker recognizes `claude`, `grok` and `antigravity`. It verifies helper bytes, copies them into the job directory, imports that copy to obtain the environment, and executes it with Python isolated mode. Importing a helper runs Python code: hashes detect changes; they do not make malicious code safe.
+The current beta worker recognizes `claude-code`, `grok` and `antigravity`; `claude` is a legacy alias for `claude-code`. It verifies helper bytes, copies them into the job directory, imports that copy to obtain the environment, and executes it with Python isolated mode. Importing a helper runs Python code: hashes detect changes; they do not make malicious code safe.
 
 Helpers should be self-contained or depend only on explicitly installed packages in the worker environment. Relative imports or sidecars beside the original script will not automatically accompany the copied helper. Review the provider binary and its configuration separately: pinning the helper does not pin everything it launches.
+
+## Non-generating discovery
+
+A helper exports `discover_models()` with no required arguments. It reads its private runtime config and returns `provider`, `source: "official_cli"`, `runtime_version`, `evidence` (a concise non-secret string), and `models`. Each model entry contains `id`, optional `label`, optional `resolved_id` for a changing alias, and `efforts` (nonempty actual supported options). `default` deliberately omits the effort flag when no adjustable level is advertised; it does not claim a particular reasoning depth. Discovery must not send a model prompt or create a review session. Never return account identifiers, login challenges, credentials, raw auth reports, or private conversation content.
+
+The hub verifies the helper source hash before importing this function in an isolated subprocess. It persists only the normalized catalog and observation summary. A changed model/effort/resolved-alias fingerprint invalidates the previous confirmation. Cosmetic labels and runtime versions do not. Helpers must accept explicit model and effort choices at review time; old pin defaults cannot substitute for a user's choice. See [setup and compatible updates](models-and-updates-v0.5.md).
+
+The optional `runtime_update` object carries a release advisory: `status`, `source`, `installed_version`, `checked_at`, `latest_version`, and `update_available`, with optional `guidance`. The supplied Claude Code helper checks public official release metadata without authentication. A failed check reports `unavailable` and unknown update availability. The hub retains only recognized, sanitized fields. This advisory is separate from the model fingerprint and admission checks: it recommends updating and rediscovering when needed, but does not install software, prove account access, or reject a compatible app solely because its version changed.
 
 ## Invocation
 
@@ -18,13 +26,13 @@ The worker invokes the helper without a shell, with these five required options:
 |---|---|
 | `--prompt-file` | UTF-8 file containing the complete prepared request. |
 | `--output-dir` | A new directory for the response and receipt; refuse an existing directory. |
-| `--model` | The locally configured model or alias; record actual returned model identifiers. |
-| `--effort` | The locally configured effort supported by this provider binary. |
+| `--model` | The user-confirmed account model or alias; record actual returned model identifiers. |
+| `--effort` | The user-confirmed thinking level from this model's observed menu. |
 | `--timeout` | Process deadline in seconds; terminate owned descendants on timeout. |
 
 Preserve the configured introduction and quoted evidence in the prepared packet. A reusable helper must not prepend personal identities, import another conversation, or silently broaden the requested task. Record any necessary transport encoding separately from the original input.
 
-Expose `clean_environment() -> dict[str, str]` for `claude`, or `safe_env() -> dict[str, str]` for `grok` and `antigravity`. Construct an environment allowlist that preserves the official subscription login route while excluding API/cloud keys, provider overrides, proxies and unrelated configuration injection. Do not return credentials to the coordinator or write them to receipts.
+Expose `clean_environment() -> dict[str, str]` for `claude-code` (legacy `claude`), or `safe_env() -> dict[str, str]` for `grok` and `antigravity`. Construct an environment allowlist that preserves the official subscription login route while excluding API/cloud keys, provider overrides, proxies and unrelated configuration injection. Do not return credentials to the coordinator or write them to receipts.
 
 The helper must establish the provider's empty/scoped working directory and actual tool restrictions itself. The hub launches it in a job directory containing private evidence; that launch directory is not a provider sandbox. Remove unnecessary tools, MCP servers, hooks, plugins, memory and cross-product imports where supported. The Antigravity adapter retains one exact reviewed denial hook because its advertised tool catalog remains present; this is an application policy, not an OS sandbox. Inspect unavoidable startup sources. Prompt instructions alone are not an execution boundary, and preprocessing can access files before model tool calls.
 

@@ -13,15 +13,15 @@ import uuid
 PROVIDERS = frozenset({
     "claude", "grok", "chatgpt", "gemini", "claude-cowork", "grok-bot",
     "microsoft-copilot", "github-copilot", "gemini-cli", "gemini-desktop",
-    "gemini-spark", "meta-ai", "meta-muse", "antigravity",
+    "gemini-spark", "meta-ai", "meta-muse", "antigravity", "claude-code", "claude-desktop",
 })
 # These names were valid user aliases before the additional routes existed.
 # Only reads of older profiles may preserve their former (old-route) targets.
-ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse", "antigravity"})
+ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse", "antigravity", "claude-code", "claude-desktop"})
 # Antigravity was introduced after the v0.3 routes. A pre-existing alias with
 # this name may legitimately point to any earlier route, including Gemini CLI.
 LEGACY_ALIAS_TARGETS = {
-    name: (PROVIDERS - {"antigravity"} if name == "antigravity" else PROVIDERS - ADDED_PROVIDERS)
+    name: (PROVIDERS - {"claude-code", "claude-desktop"} if name in {"claude-code", "claude-desktop"} else PROVIDERS - {"antigravity", "claude-code", "claude-desktop"} if name == "antigravity" else PROVIDERS - ADDED_PROVIDERS)
     for name in ADDED_PROVIDERS
 }
 FIELDS = frozenset({"agent_name", "user_name", "collaborators", "aliases", "context_notes", "evidence"})
@@ -44,8 +44,8 @@ def _text(value, label: str, maximum: int, *, minimum: int = 0, multiline: bool 
 def _mapping(value, label: str, *, allow_legacy_aliases: bool = False) -> dict[str, str]:
     if value is None:
         return {}
-    if not isinstance(value, dict) or len(value) > 16 or any(not isinstance(key, str) for key in value):
-        raise ValueError(f"{label} must be an object with at most 16 string keys")
+    if not isinstance(value, dict) or len(value) > 32 or any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{label} must be an object with at most 32 string keys")
     result = {}
     for key, item in value.items():
         if label == "aliases":

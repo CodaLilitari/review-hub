@@ -1,20 +1,14 @@
 {
-  "claude": {
-    "path": "C:/path/to/reviewed/helpers/claude_check.py",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "model": "REPLACE_WITH_VERIFIED_SUBSCRIPTION_MODEL",
-    "effort": "REPLACE_WITH_SUPPORTED_EFFORT"
+  "claude-code": {
+    "path": "C:/path/to/review-hub/scripts/claude_code_check.py",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "grok": {
-    "path": "C:/path/to/reviewed/helpers/grok_check.py",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "model": "REPLACE_WITH_VERIFIED_SUBSCRIPTION_MODEL",
-    "effort": "REPLACE_WITH_SUPPORTED_EFFORT"
+    "path": "C:/path/to/review-hub/scripts/grok_check.py",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "antigravity": {
     "path": "C:/path/to/review-hub/scripts/antigravity_check.py",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "model": "gemini-3.8-flash-high",
-    "effort": "high"
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   }
 }
