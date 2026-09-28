@@ -59,6 +59,22 @@ class ReportingTests(unittest.TestCase):
                              for name, _ in parser.attributes))
         return parser
 
+    def test_continuation_receipts_preserve_lineage_without_raw_artifact_paths(self):
+        data = self.fixture()
+        data['jobs'][0]['job']['handoff_turns'] = [{
+            'turn_id': 'first-turn', 'answer_sha256': 'f' * 64,
+            'completion': {'status': 'tool_limit'},
+            'returned_artifacts': [{'source_path': 'PRIVATE_SOURCE_SENTINEL',
+                                    'snapshot_path': 'PRIVATE_SNAPSHOT_SENTINEL'}]},
+            {'turn_id': 'final-turn', 'previous_turn_id': 'first-turn',
+             'previous_answer_sha256': 'f' * 64, 'completion': {'status': 'completed'}}]
+        for format in ('html', 'markdown'):
+            rendered = render_report(data, format)
+            for value in ('first-turn', 'final-turn', 'tool_limit', 'f' * 64):
+                self.assertIn(value, rendered)
+            for value in ('PRIVATE_SOURCE_SENTINEL', 'PRIVATE_SNAPSHOT_SENTINEL'):
+                self.assertNotIn(value, rendered)
+
     def test_html_preserves_requested_observed_evidence_and_attachment_distinctions(self):
         rendered = render_report(self.fixture())
         self.assert_inert_html(rendered)

@@ -29,7 +29,8 @@ class ReviewTests(unittest.TestCase):
         self.hub.record_handoff_result(self.project, job['id'], 'Synthetic returned advice.',
                                       'Observed synthetic response for offline test.', ref,
                                       observed_attachment_ids=[a['attachment_id'] for a in job.get('attachments', [])],
-                                      attachment_evidence='Observed synthetic attachment chips only.')
+                                      attachment_evidence='Observed synthetic attachment chips only.',
+                                      completion_observation={'status': 'completed'})
         return job
 
     def envelope(self, job):

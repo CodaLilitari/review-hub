@@ -65,8 +65,10 @@ def parser() -> argparse.ArgumentParser:
         if name == "result":
             child.add_argument("--offset", type=int, default=0)
             child.add_argument("--limit", type=int, default=12000)
+            child.add_argument("--turn-id", default="")
         if name == "attachment-files":
             child.add_argument("--direction", choices=("input", "output"), default="input")
+            child.add_argument("--turn-id", default="")
     return command
 
 
@@ -146,15 +148,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "jobs":
             value = hub.jobs(args.project, batch_id=args.batch_id)
         elif args.command == "result":
-            value = hub.result(args.project, args.job_id, offset=args.offset, limit=args.limit)
+            value = hub.result(args.project, args.job_id, offset=args.offset, limit=args.limit, turn_id=args.turn_id)
         elif args.command == "cancel":
             value = hub.cancel(args.project, args.job_id)
         elif args.command == "attachment-files":
-            value = hub.attachment_files(args.project, args.job_id, direction=args.direction)
+            value = hub.attachment_files(args.project, args.job_id, direction=args.direction, turn_id=args.turn_id)
         elif args.command == "record-handoff-result":
             value = hub.record_handoff_result(**_payload(args.jsonfile, {
                 "project", "job_id", "response", "evidence", "conversation_ref",
-            }, {"acknowledgment", "observed_attachment_ids", "attachment_evidence", "returned_files", "artifact_evidence", "observed_model", "observed_mode"}))
+            }, {"acknowledgment", "observed_attachment_ids", "attachment_evidence", "returned_files", "artifact_evidence", "observed_model", "observed_mode", "completion_observation", "previous_turn_id"}))
         else:
             value = hub.handoff(**_payload(args.jsonfile, {"project", "provider", "prompt"}, {"conversation_ref", "attachments"}))
     except (ValueError, TypeError, OSError, EOFError) as exc:

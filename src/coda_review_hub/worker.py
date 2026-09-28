@@ -14,7 +14,7 @@ import sys
 import time
 
 from .core import Hub, ACTIVE, RETIRED, atomic_json, digest, encoded, now
-from .attachments import verify_files, manifest_digest
+from .attachments import verify_files, manifest_digest, NATIVE_IMAGE_TYPES
 
 
 def contain_worker():
@@ -134,6 +134,13 @@ def run_job(hub: Hub, job_id: str):
                 command = [sys.executable, "-I", str(runner), "--prompt-file", str(request),
                            "--output-dir", str(output), "--model", data["model"],
                            "--effort", data["effort"], "--timeout", str(data["timeout"])]
+                if data.get("attachment_transport") == "claude_content_blocks":
+                    expected_images = [item["sha256"] for item in manifest
+                        if Path(item["original_name"]).suffix.lower() in NATIVE_IMAGE_TYPES]
+                    if (data["provider"] != "claude-code" or data.get("input_format") != "stream-json"
+                            or not expected_images or expected_images != data.get("input_image_sha256s")):
+                        raise ValueError("Native attachment transport or image manifest changed")
+                    command += ["--input-format", "stream-json"]
                 data = hub._update(c, row, state="running", started_at=now(),
                                    submission="local_helper_launch_pending", worker_pid=os.getpid())
             claimed = True
@@ -179,6 +186,13 @@ def run_job(hub: Hub, job_id: str):
             "response_subtype": (None, "success"),
             "response_is_error": (None, False),
         }.items())
+        native_input = data.get("attachment_transport") == "claude_content_blocks"
+        native_receipt_matches = (native_input and metadata.get("input_format") == "stream-json"
+            and metadata.get("input_transport") == "claude_content_blocks"
+            and metadata.get("request_sha256") == data["packet_sha256"]
+            and metadata.get("input_image_sha256s") == data["input_image_sha256s"])
+        if native_input and claims_completion and not native_receipt_matches:
+            contradiction = True
         successful = (not stop and not contradiction and process.returncode == 0 and metadata.get("status") == "completed"
                       and metadata.get("model_review_completed") is True)
         result_path = output / "result.txt"
@@ -216,11 +230,13 @@ def run_job(hub: Hub, job_id: str):
                         observed_cli_models=observed_models, model_evidence=model_evidence,
                         contradictory_completion_fields=contradiction,
                         contradictory_submission_fields=delivery_contradiction,
+                        native_input_receipt_matched=native_receipt_matches if native_input else None,
                         provider_session_id=metadata.get("session_id"),
                         error=None if successful else "Inspect the local helper receipt before retrying; no automatic retry was made",
                         answer_available=bool(answer.strip()),
                         answer_sha256=digest(answer.encode('utf-8')) if answer else None,
-                        attachment_delivery=("embedded_text_response_received" if successful else "see_submission_state") if data.get("attachments") else "no_attachments",
+                        attachment_delivery=(("native_content_response_received" if native_input else "embedded_text_response_received")
+                            if successful else "see_submission_state") if data.get("attachments") else "no_attachments",
                         provider_resume=False)
     except BaseException as exc:
         if process is not None and process.poll() is None:

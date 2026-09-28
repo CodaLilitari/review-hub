@@ -1,5 +1,6 @@
 """Offline Claude Code discovery/isolation tests; no provider is contacted."""
 from contextlib import redirect_stdout
+import base64
 import importlib.util
 import io
 import json
@@ -42,6 +43,20 @@ class ClaudeCodeHelperTests(unittest.TestCase):
                 "evidence": "Synthetic offline initialization fixture, no provider contacted.",
                 "discovery_details": {"user_prompt_sent": False,
                              "runtime_provenance": {"sha256": helper.sha256(self.exe.read_bytes())}}}
+
+    def native_packet(self, images=None, text="FixtureAgent: Please inspect this supplied image. Thank you. π 🖤"):
+        if images is None:
+            images = [("image/png", base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZFY4AAAAASUVORK5CYII="))]
+        content = [{"type": "text", "text": text}]
+        content.extend({"type": "image", "source": {"type": "base64", "media_type": media,
+                       "data": base64.b64encode(data).decode("ascii")}} for media, data in images)
+        return {"type": "user", "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None}
+
+    def native_bytes(self, value=None):
+        return (json.dumps(value if value is not None else self.native_packet(),
+                           ensure_ascii=False, separators=(", ", ": ")) + "\n").encode("utf-8")
 
     def test_catalog_accepts_additive_fields_and_future_models(self):
         payload = self.payload()
@@ -143,6 +158,169 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         self.assertEqual(args[args.index("--setting-sources") + 1], "")
         self.assertNotIn("--bare", args)
         self.assertNotIn("--fallback-model", args)
+
+    def test_native_input_command_preserves_all_isolation_settings(self):
+        native = helper.review_command(self.exe, self.mcp, "opus", "max", "stream-json")
+        self.assertEqual(native[native.index("--input-format") + 1], "stream-json")
+        native_without_input = native.copy()
+        index = native_without_input.index("--input-format")
+        del native_without_input[index:index + 2]
+        self.assertEqual(native_without_input, helper.review_command(self.exe, self.mcp, "opus", "max"))
+        self.assertEqual(native[native.index("--tools") + 1], "")
+        self.assertIn("--no-session-persistence", native)
+        self.assertIn("--strict-mcp-config", native)
+        self.assertNotIn("--add-dir", native)
+        self.assertIn("supplied image blocks", helper.SYSTEM_PROMPT)
+
+    def test_native_image_blocks_accept_unicode_and_hash_images_in_order(self):
+        # These intentionally test signatures, not complete image decoding.
+        images = [("image/png", b"\x89PNG\r\n\x1a\nfixture"),
+                  ("image/jpeg", b"\xff\xd8\xfffixture"),
+                  ("image/gif", b"GIF87afixture"), ("image/gif", b"GIF89afixture"),
+                  ("image/webp", b"RIFF\x10\x00\x00\x00WEBPfixture")]
+        packet = self.native_bytes(self.native_packet(images))
+        self.assertIn("π 🖤".encode("utf-8"), packet)
+        self.assertEqual(helper.validate_input_packet(packet, "stream-json"),
+                         [helper.sha256(data) for _, data in images])
+        self.assertEqual(helper.validate_input_packet(packet[:-1] + b"\r\n", "stream-json"),
+                         [helper.sha256(data) for _, data in images])
+        self.assertEqual(helper.validate_input_packet(b"plain UTF-8 packet \xcf\x80", "text"), [])
+
+    def test_native_packet_rejects_extra_frames_duplicates_and_wrong_roles(self):
+        packet = self.native_bytes()
+        invalid_bytes = [packet + packet, packet + b"\n", packet.rstrip(b"\n"),
+                         json.dumps(self.native_packet(), indent=2).encode() + b"\n",
+                         packet.replace(b'"type": "user"', b'"type": "user", "type": "user"', 1),
+                         b"\xff\n"]
+        for invalid in invalid_bytes:
+            with self.subTest(invalid=invalid[:40]), self.assertRaises(ValueError):
+                helper.validate_input_packet(invalid, "stream-json")
+        for level, key, value in (("frame", "type", "control_request"),
+                                  ("frame", "parent_tool_use_id", "existing-tool"),
+                                  ("frame", "session_id", "unapproved-session"),
+                                  ("message", "role", "assistant"),
+                                  ("message", "tool_use", {})):
+            frame = self.native_packet()
+            target = frame if level == "frame" else frame["message"]
+            target[key] = value
+            with self.subTest(level=level, key=key), self.assertRaises(ValueError):
+                helper.validate_input_packet(self.native_bytes(frame), "stream-json")
+
+    def test_native_packet_rejects_tools_urls_documents_and_file_references(self):
+        image = self.native_packet()["message"]["content"][1]
+        invalid_blocks = [
+            {"type": "tool_use", "id": "tool", "name": "Read", "input": {"file_path": "private"}},
+            {"type": "tool_result", "tool_use_id": "tool", "content": "private"},
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERg=="}},
+            {"type": "image", "source": {"type": "url", "url": "https://example.invalid/private"}},
+            {"type": "image", "source": {"type": "file", "file_id": "private"}},
+            {**image, "file_path": "private"},
+            {"type": "text", "text": "look", "file_path": "private"},
+            {"type": "image", "source": {**image["source"], "url": "https://example.invalid/private"}},
+            {"type": "image", "source": {**image["source"], "media_type": "application/pdf"}},
+        ]
+        for block in invalid_blocks:
+            frame = self.native_packet()
+            frame["message"]["content"][1] = block
+            with self.subTest(type=block["type"], keys=sorted(block)), self.assertRaises(ValueError):
+                helper.validate_input_packet(self.native_bytes(frame), "stream-json")
+
+    def test_native_packet_requires_text_and_image_and_valid_unicode(self):
+        for content in ([], [{"type": "text", "text": "Text alone"}],
+                        self.native_packet()["message"]["content"][1:],
+                        [{"type": "text", "text": " \n"}],
+                        [{"type": "text", "text": "\ud800"}]):
+            frame = self.native_packet()
+            frame["message"]["content"] = content
+            with self.subTest(content=repr(content)[:60]), self.assertRaises(ValueError):
+                helper.validate_input_packet((json.dumps(frame) + "\n").encode(), "stream-json")
+
+    def test_native_image_rejects_malformed_noncanonical_and_mismatched_base64(self):
+        # /x== decodes with ignored nonzero padding bits; canonical form is /w==.
+        for data in ("", "%%%%", "\u00e9", "AA=", "/x==", "aGVsbG8=\n",
+                     "iVBORw0KGgo=ignored", base64.b64encode(b"ordinary file bytes").decode()):
+            frame = self.native_packet()
+            frame["message"]["content"][1]["source"]["data"] = data
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                helper.validate_input_packet(self.native_bytes(frame), "stream-json")
+        frame = self.native_packet()
+        frame["message"]["content"][1]["source"]["media_type"] = "image/jpeg"
+        with self.assertRaisesRegex(ValueError, "signature"):
+            helper.validate_input_packet(self.native_bytes(frame), "stream-json")
+
+    def test_native_packet_enforces_encoded_decoded_and_count_limits(self):
+        with self.assertRaisesRegex(ValueError, "bounded input size"):
+            helper.validate_input_packet(b"x" * (8 * 1024 * 1024 + 1), "stream-json")
+        with self.assertRaisesRegex(ValueError, "bounded input size"):
+            helper.validate_input_packet(b"x" * (4 * 1024 * 1024 + 1), "text")
+        oversized = b"\x89PNG\r\n\x1a\n" + b"x" * (5 * 1024 * 1024 - 7)
+        with self.assertRaisesRegex(ValueError, "bounded"):
+            helper.validate_input_packet(self.native_bytes(self.native_packet([("image/png", oversized)])),
+                                         "stream-json")
+        images = [("image/png", b"\x89PNG\r\n\x1a\nfixture")] * 17
+        with self.assertRaisesRegex(ValueError, "image count"):
+            helper.validate_input_packet(self.native_bytes(self.native_packet(images)), "stream-json")
+        self.assertEqual(len(helper.validate_input_packet(self.native_bytes(self.native_packet(images[:16])),
+                                                        "stream-json")), 16)
+
+    def test_native_dry_run_validates_without_auth_discovery_or_child_execution(self):
+        packet = self.root / "request.jsonl"
+        packet.write_bytes(self.native_bytes())
+        output = self.root / "native-dry-run"
+        argv = ["helper", "--config", str(self.config_file), "--prompt-file", str(packet),
+                "--output-dir", str(output), "--model", "opus", "--effort", "max",
+                "--input-format", "stream-json", "--dry-run"]
+        captured = io.StringIO()
+        with patch.object(sys, "argv", argv), patch.object(helper, "discover_in_workspace") as discover, \
+                patch.object(helper, "run_child") as child, redirect_stdout(captured):
+            self.assertEqual(helper.main(), 0)
+        discover.assert_not_called()
+        child.assert_not_called()
+        self.assertFalse(output.exists())
+        metadata = json.loads(captured.getvalue())
+        self.assertFalse(metadata["sent"])
+        self.assertFalse(metadata["discovery_executed"])
+        self.assertEqual(metadata["input_format"], "stream-json")
+        self.assertEqual(metadata["input_transport"], "claude_content_blocks")
+        self.assertEqual(metadata["request_sha256"], helper.sha256(packet.read_bytes()))
+        packet.write_bytes(packet.read_bytes() + packet.read_bytes())
+        with patch.object(sys, "argv", argv), patch.object(helper, "discover_in_workspace") as discover, \
+                patch.object(helper, "run_child") as child, self.assertRaises(SystemExit) as caught:
+            helper.main()
+        self.assertEqual(caught.exception.code, 2)
+        discover.assert_not_called()
+        child.assert_not_called()
+
+    def test_native_review_delivers_exact_bytes_and_records_decoded_image_hashes(self):
+        packet = self.root / "request.jsonl"
+        raw = self.native_bytes()[:-1] + b"\r\n"
+        packet.write_bytes(raw)
+        output = self.root / "native-review"
+        argv = ["helper", "--config", str(self.config_file), "--prompt-file", str(packet),
+                "--output-dir", str(output), "--model", "opus", "--effort", "max",
+                "--input-format", "stream-json"]
+        response = {"type": "result", "subtype": "success", "is_error": False, "result": "Fixture image review"}
+        result = {"stdout": json.dumps(response).encode(), "stderr": b"", "returncode": 0,
+                  "timed_out": False, "runtime_seconds": 0.01}
+        with patch.object(sys, "argv", argv), \
+                patch.object(helper, "discover_in_workspace", return_value=self.catalog()) as discover, \
+                patch.object(helper, "run_child", return_value=result) as child, redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 0)
+        discover.assert_called_once()
+        child.assert_called_once()
+        command, cwd, env, timeout, stdin = child.call_args.args
+        self.assertEqual(stdin, raw)
+        self.assertEqual(command[command.index("--input-format") + 1], "stream-json")
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual((output / "prompt.txt").read_bytes(), raw)
+        self.assertEqual((output / "request.txt").read_bytes(), raw)
+        metadata = json.loads((output / "metadata.json").read_text())
+        self.assertEqual(metadata["status"], "completed")
+        self.assertEqual(metadata["request_sha256"], helper.sha256(raw))
+        self.assertEqual(metadata["input_image_sha256s"], helper.validate_input_packet(raw, "stream-json"))
+        self.assertEqual(metadata["input_transport"], "claude_content_blocks")
+        self.assertFalse(metadata["isolation"]["session_persistence"])
+        self.assertEqual(metadata["isolation"]["tools"], [])
 
     def test_environment_removes_alternative_credentials(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-secret", "CLAUDE_CODE_USE_BEDROCK": "1",

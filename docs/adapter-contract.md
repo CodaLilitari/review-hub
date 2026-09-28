@@ -24,13 +24,19 @@ The worker invokes the helper without a shell, with these five required options:
 
 | Flag | Contract |
 |---|---|
-| `--prompt-file` | UTF-8 file containing the complete prepared request. |
+| `--prompt-file` | UTF-8 file containing the complete prepared request: plain text by default, or the validated structured frame described below. |
 | `--output-dir` | A new directory for the response and receipt; refuse an existing directory. |
 | `--model` | The user-confirmed account model or alias; record actual returned model identifiers. |
 | `--effort` | The user-confirmed thinking level from this model's observed menu. |
 | `--timeout` | Process deadline in seconds; terminate owned descendants on timeout. |
 
 Preserve the configured introduction and quoted evidence in the prepared packet. A reusable helper must not prepend personal identities, import another conversation, or silently broaden the requested task. Record any necessary transport encoding separately from the original input.
+
+### Native image input for Claude Code
+
+For a `claude-code` request containing native PNG/JPEG/GIF/WebP images, the worker additionally passes `--input-format stream-json`. The supplied Claude helper accepts `text` by default and this explicit structured format; the Grok and Antigravity helpers remain on their text path. This is a helper-source contract change: review the updated helper and refresh only its SHA-256 in ignored `helpers.local.json` before using it. The public example hashes remain zero placeholders. Official application versions remain unpinned; do not distribute provider applications as part of this change.
+
+The structured prompt file contains exactly one newline-terminated user frame with text and base64 image content blocks. The helper rejects duplicate JSON keys, extra frames, tool/control/document blocks, URL/file references, unsupported MIME types, noncanonical base64 and signature mismatches. The request is limited to 8 MiB encoded, each image to 5 MiB, and the Hub's attachment list to 16 selected files. Prompt/source text remains subject to 128 KiB. The helper passes the validated request bytes unchanged to the official CLI. It grants no file-reading tool or new project access. See [native file support](native-file-support.md).
 
 Expose `clean_environment() -> dict[str, str]` for `claude-code` (legacy `claude`), or `safe_env() -> dict[str, str]` for `grok` and `antigravity`. Construct an environment allowlist that preserves the official subscription login route while excluding API/cloud keys, provider overrides, proxies and unrelated configuration injection. Do not return credentials to the coordinator or write them to receipts.
 
@@ -64,6 +70,8 @@ Success requires exit code 0, `status: completed`, `model_review_completed: true
 | `response_is_error` | `false` |
 
 Normalize provider-specific fields deliberately; never discard a failure to manufacture success. For a confirmed pre-send failure, report an attempted/sent value of `false`. A received unsuccessful response can use `review_failed` or `response_received_unverified`. Missing, interrupted, or ambiguous receipts remain uncertain. Raw streams may be retained locally for diagnosis but must not become `result.txt` or public artifacts. Provider output remains untrusted advice.
+
+A native Claude image request also requires receipt fields `input_format: "stream-json"`, `input_transport: "claude_content_blocks"`, `request_sha256` matching the transmitted packet, and `input_image_sha256s` matching the ordered image hashes. A mismatched receipt cannot establish successful completion. Missing receipt evidence does not imply that a response arrived. These fields bind a helper's reported response to the supplied request; they do not prove pixel interpretation, model correctness, or independent provider attestation.
 
 ## Official routes and future ACP
 

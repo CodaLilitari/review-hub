@@ -29,7 +29,7 @@ class RouteCapabilityTests(unittest.TestCase):
                 self.assertNotIn(identity_field, contract)
         self.assertEqual(json.loads(json.dumps(catalog)), catalog)
 
-    def test_cli_routes_support_only_embedded_source_text(self):
+    def test_cli_routes_describe_only_their_implemented_file_transports(self):
         for provider in ("claude-code", "grok", "antigravity"):
             with self.subTest(provider=provider):
                 contract = route_capabilities(provider)
@@ -37,8 +37,10 @@ class RouteCapabilityTests(unittest.TestCase):
                 self.assertTrue(contract["available_for_new_work"])
                 self.assertTrue(contract["text_snapshot"])
                 for name in CAPABILITY_FIELDS[1:]:
-                    self.assertIs(contract[name], False)
+                    self.assertIs(contract[name], provider == "claude-code" and name in {"native_file_manifest", "image_visual_input"})
                 self.assertIn("SVG", contract["capability_evidence"]["image_visual_input"])
+        self.assertEqual(route_capabilities("claude-code")["native_input_media_types"],
+                         ["image/gif", "image/jpeg", "image/png", "image/webp"])
 
     def test_handoffs_distinguish_local_staging_from_app_capabilities(self):
         handoffs = set(PROVIDERS) - {"claude", "claude-code", "grok", "antigravity", "gemini-cli"}

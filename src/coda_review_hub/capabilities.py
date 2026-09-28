@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 import re
 
-from .attachments import TEXT_EXTENSIONS
+from .attachments import TEXT_EXTENSIONS, NATIVE_IMAGE_TYPES, MAX_NATIVE_IMAGE_BYTES, MAX_NATIVE_PACKET_BYTES
 from .identity import PROVIDERS
 
 
@@ -25,7 +25,7 @@ CAPABILITY_FIELDS = (
     "text_snapshot", "native_file_manifest", "image_visual_input",
     "document_binary_input", "returned_file_snapshot", "session_resume",
 )
-INPUT_TRANSPORTS = frozenset({"utf8_json_in_prompt", "app_file_handoff"})
+INPUT_TRANSPORTS = frozenset({"utf8_json_in_prompt", "claude_content_blocks", "app_file_handoff"})
 OUTPUT_TRANSPORTS = frozenset({"app_file_handoff", "returned_file_snapshot"})
 
 
@@ -74,6 +74,16 @@ def route_capabilities(provider: str) -> dict:
             "returned_file_snapshot": "The automated worker retains response text and local receipts, not provider-returned file attachments.",
             "session_resume": "Each automated review is isolated; no provider session resume is requested.",
         }
+        if canonical == "claude-code":
+            result.update(native_file_manifest=True, image_visual_input=True,
+                native_input_media_types=sorted(set(NATIVE_IMAGE_TYPES.values())),
+                max_native_image_bytes=MAX_NATIVE_IMAGE_BYTES, max_encoded_request_bytes=MAX_NATIVE_PACKET_BYTES)
+            result["capability_evidence"].update(
+                native_file_manifest="Exact image snapshots are encoded as native content blocks; source/text remains quoted evidence.",
+                image_visual_input="PNG/JPEG/GIF/WebP bytes can be sent through Claude Code structured stdin with tools disabled. This is an implemented transport, not current account/model acceptance or visual correctness. SVG remains source text.",
+                document_binary_input="PDF/Office/audio/video are not enabled in this CLI adapter; use an observed supported app upload.")
+        result["file_guidance"] = ("Choose a supported app handoff for formats outside this CLI's implemented input types; "
+                                   "do not silently omit files or label extracted text as native input.")
     elif canonical in HANDOFF_PROVIDERS:
         result.update(
             transport="coordinator_handoff", available_for_new_work=True,
@@ -154,7 +164,14 @@ def attachment_view(manifest_item: dict, direction: str, transport: str) -> dict
             provider_acceptance="not_applicable_to_retained_output",
             provider_interpretation="not_attested",
         )
-    elif transport == "utf8_json_in_prompt":
+    elif transport == "claude_content_blocks" and PurePosixPath(names["original_name"]).suffix.lower() in NATIVE_IMAGE_TYPES:
+        result.update(
+            representation="native_image_content_block",
+            representation_evidence="Image bytes are represented as a native base64 image block, not an extracted description. The declared transport alone does not prove provider receipt or visual correctness.",
+            provider_acceptance="not_attested",
+            provider_interpretation="native_image_input_no_understanding_claim",
+        )
+    elif transport in {"utf8_json_in_prompt", "claude_content_blocks"}:
         if PurePosixPath(names["original_name"]).suffix not in TEXT_EXTENSIONS:
             raise ValueError("Automated attachment descriptions require a supported source/text filename")
         result.update(

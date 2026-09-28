@@ -280,7 +280,8 @@ class ModelDispatchTests(unittest.TestCase):
         self.hub.record_models("claude-desktop", [{"id": "different-model", "efforts": ["high"]}],
             "Synthetic subsequent app catalog observation.", datetime.now(timezone.utc).isoformat())
         result = self.hub.record_handoff_result(str(self.project), first["job"]["id"], "Synthetic actual answer.",
-            "Synthetic observed response after the first request.", "synthetic-conversation", observed_model="fixture-app", observed_mode="default")
+            "Synthetic observed response after the first request.", "synthetic-conversation", observed_model="fixture-app", observed_mode="default",
+            completion_observation={"status": "completed"})
         self.assertEqual(result["job"]["state"], "returned_via_handoff")
 
     def test_interactive_cli_can_choose_from_a_fresh_observed_app_catalog(self):

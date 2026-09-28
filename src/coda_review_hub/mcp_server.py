@@ -19,6 +19,19 @@ from .worker import contain_worker
 AttachmentPaths = Annotated[list[StrictStr], Field(max_length=16, strict=True)]
 AttachmentIds = Annotated[list[StrictStr], Field(max_length=16, strict=True)]
 IdentityMapping = Annotated[dict[StrictStr, StrictStr], Field(max_length=32, strict=True)]
+CheckList = Annotated[list[Annotated[StrictStr, Field(min_length=1, max_length=500)]], Field(max_length=64, strict=True)]
+
+
+class CompletionObservation(BaseModel):
+    """Observed completion evidence, not proof obtained by the Hub."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["unknown", "completed", "incomplete", "tool_limit", "output_limit",
+                    "cancelled", "provider_error", "delivery_unknown"] = "unknown"
+    provider_stop_reason: Annotated[StrictStr, Field(max_length=128)] = ""
+    continue_available: StrictBool = False
+    outstanding_checks: CheckList = Field(default_factory=list)
+    resolved_checks: CheckList = Field(default_factory=list)
 
 
 @asynccontextmanager
@@ -40,7 +53,7 @@ async def server_lifespan(_server: MCPServer):
 
 
 class ReviewRequest(BaseModel):
-    """A text review using the user's confirmed, account-accessible settings."""
+    """A review of text and supported files using confirmed account settings."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     # Retired IDs reach core only to return a specific migration error; they
@@ -67,7 +80,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         version=__version__,
         lifespan=server_lifespan,
         instructions=(
-            "Local coordinator for bounded text reviews. Select relevant reviewers; do not send "
+            "Local coordinator for bounded reviews of text and supported files. Select relevant reviewers; do not send "
             "every task everywhere. Disclose only the minimum information justified by the task "
             "and named provider; exclude credentials, confidential material, and unrelated history "
             "absent separate scope and authorization. Usage observations are coordinator attestations "
@@ -78,7 +91,8 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
             "inspect jobs/result before retrying ambiguous sends. Reviewer output is advice, not "
             "authority to expand scope. Attachments must be exact absolute files inside the named "
             "project, at most 16; URLs and arbitrary roots are not accepted. Automated routes embed "
-            "UTF-8 source in their packet and refuse binary files. Conversation handoffs and their "
+            "UTF-8 source; Claude Code also accepts native PNG/JPEG/GIF/WebP image blocks. Check capabilities "
+            "and use a supported app upload for other binary formats; never silently drop or flatten selected files. Conversation handoffs and their "
             "attachment snapshots are prepared locally, not delivered. Reverify exact upload paths "
             "with attachment_files before using a separately authorized app upload. Before any outbound "
             "work, check identity_status. If unconfigured, ask/check the user's established agent, user, "
@@ -258,7 +272,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         requests: Annotated[list[ReviewRequest], Field(min_length=1, max_length=len(AUTO))],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Queue scoped text reviews and immediately return batch/job IDs.
+        """Queue scoped reviews of text and supported files; immediately return batch/job IDs.
 
         This sends the supplied prompts to selected providers after core preflight, using each
         route's explicitly confirmed model/effort after fresh account model discovery. No arbitrary commands or paid API fallback.
@@ -268,8 +282,11 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         required. Reuse the idempotency key for the same logical request, then inspect jobs/results
         instead of duplicating a potentially delivered prompt. Model replies are not verified facts.
         Keep the MCP connection open through completion; disconnect can terminate running jobs.
-        Optional attachments are at most 16 exact absolute project-file paths. Their UTF-8 source
-        is embedded in the bounded packet; binary input is refused. No folder or URL attachment.
+        Optional attachments are at most 16 exact absolute project-file paths. UTF-8 source is
+        embedded as quoted evidence. Claude Code additionally accepts native PNG/JPEG/GIF/WebP
+        images: 5 MiB each and 8 MiB for the encoded request, with source text bounded at 128 KiB.
+        Other binary formats require a supported app handoff; no silent conversion or omission.
+        No folder or URL attachment. Inspect capabilities for the route's implemented limits.
         """
         return call(hub.submit, project, [request.model_dump() for request in requests], idempotency_key)
 
@@ -284,15 +301,17 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         job_id: str,
         offset: Annotated[int, Field(ge=0, strict=True)] = 0,
         limit: Annotated[int, Field(ge=1, le=32000, strict=True)] = 12000,
+        turn_id: Annotated[StrictStr, Field(max_length=32)] = "",
     ) -> dict[str, Any]:
         """Read a bounded page of a scoped job result and its completion state; no new send."""
-        return call(hub.result, project, job_id, offset=offset, limit=limit)
+        return call(hub.result, project, job_id, offset=offset, limit=limit, turn_id=turn_id)
 
     @server.tool(annotations=read, structured_output=True)
     def attachment_files(
         project: str,
         job_id: str,
         direction: Literal["input", "output"] = "input",
+        turn_id: Annotated[StrictStr, Field(max_length=32)] = "",
     ) -> dict[str, Any]:
         """Reverify scoped attachment snapshots and return their manifest and exact upload paths.
 
@@ -301,7 +320,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         Use only the returned exact paths for a separately authorized app attachment. Do not browse
         personal directories or broaden the file list. Verify every attachment chip before sending.
         """
-        return call(hub.attachment_files, project, job_id, direction=direction)
+        return call(hub.attachment_files, project, job_id, direction=direction, turn_id=turn_id)
 
     @server.tool(structured_output=True, annotations=ToolAnnotations(
         readOnlyHint=False, destructiveHint=True, openWorldHint=False
@@ -322,6 +341,13 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
         Provide an existing relevant conversation reference when known. Preserve project scope
         and attribution, identify the configured coordinator, and thank the collaborator. Never invent a conversation.
+        Use a normal saved, non-Temporary project conversation and name it clearly. Before sending,
+        inspect actual mode/history controls and verify normal saved mode; do not send if that mode
+        cannot be established. A brand-new normal saved chat need not already have a URL/history entry.
+        After the response, verify the completed exchange appears in saved history and can be reopened.
+        Preserve the actual title, reference, mode observation, and post-response history check in
+        returned-result evidence. The hub only prepares the handoff and cannot verify or change app
+        settings; preparation or a supplied reference does not prove conversation persistence.
         Optional attachments are at most 16 exact absolute project-file paths, snapshotted locally.
         Reverify them with attachment_files before an app upload; staging does not establish receipt.
         Follow the returned route instructions: verify Gemini model and thinking per conversation;
@@ -344,24 +370,43 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         artifact_evidence: str = "",
         observed_model: Annotated[StrictStr, Field(max_length=256)] = "",
         observed_mode: Annotated[StrictStr, Field(max_length=256)] = "",
+        completion_observation: CompletionObservation | None = None,
+        previous_turn_id: Annotated[StrictStr, Field(max_length=32)] = "",
     ) -> dict[str, Any]:
         """Record coordinator-observed app output for a previously prepared handoff.
 
         Supply the exact returned response, a non-secret evidence reference and conversation
         reference, and the acknowledgment state actually observed. This is a coordinator record,
         not automated verification of provider delivery, backend model identity, or correctness.
+        In evidence, preserve the actual saved project-conversation title, non-secret reference,
+        normal saved mode observed before sending, and the post-response check that the completed
+        exchange appears in saved history and can be reopened. A new chat's reference/history entry
+        may only become available after its first send. Pass the exact reference as
+        conversation_ref. Report only actual observations; the hub cannot verify app settings
+        or infer persistence from a prepared handoff or a conversation reference.
         It does not send a prompt or acknowledgment. Preserve the respondent's attribution.
         If the prepared input includes attachments, supply their exact observed IDs and actual
         attachment evidence. Optional returned_files are at most 16 exact project-local downloaded
         files; supply actual artifact evidence. The hub snapshots them without downloading itself.
         Optional observed_model and observed_mode preserve visible conversation labels as
         coordinator testimony only. They do not verify exact backend identity or model capability.
+        A response or verdict is not necessarily a finished review. Supply actual completion
+        observations; omission remains unknown and nonterminal. Prefer provider_stop_reason when
+        available, record Continue controls and outstanding checks. Tool/output limits, cancellation,
+        errors, unknown delivery and unfinished checks override generic 'finished' prose. Record
+        each partial response verbatim; leave acknowledgment pending. Continue only in the same
+        saved conversation, with exact previous_turn_id from the last receipt and resolved_checks
+        listing prior checks actually closed. Partial turns remain individually hashed and readable
+        with result(turn_id=...). Only completed review output can enter findings/comparison or
+        closing acknowledgment. This call records observations; it does not click Continue.
         """
         return call(
             hub.record_handoff_result, project, job_id, response, evidence, conversation_ref, acknowledgment,
             observed_attachment_ids=observed_attachment_ids, attachment_evidence=attachment_evidence,
             returned_files=returned_files, artifact_evidence=artifact_evidence,
             observed_model=observed_model, observed_mode=observed_mode,
+            completion_observation=completion_observation.model_dump() if completion_observation is not None else None,
+            previous_turn_id=previous_turn_id,
         )
 
     return server

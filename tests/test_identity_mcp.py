@@ -21,7 +21,7 @@ class MCPIdentityTests(unittest.IsolatedAsyncioTestCase):
         # Model the public distribution with no personal seed or helper pins.
         source = self.root / "public-package" / "src" / "coda_review_hub"
         source.mkdir(parents=True)
-        for name in ("__init__.py", "attachments.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py", "cli.py", "reviews.py", "capabilities.py", "reporting.py"):
+        for name in ("__init__.py", "attachments.py", "completion.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py", "cli.py", "reviews.py", "capabilities.py", "reporting.py"):
             shutil.copy2(test_mcp.PACKAGE_ROOT / "src" / "coda_review_hub" / name, source / name)
         # Synthetic catalog choices must not load the private identity seed.
         with patch.object(test_core.core, "BASE", source.parents[1]):

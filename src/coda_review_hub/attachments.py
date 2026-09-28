@@ -4,6 +4,7 @@ Project binding and hashes prevent accidental scope/version drift. They are not
 a security boundary against another process running as the same OS user.
 """
 from dataclasses import dataclass
+import base64
 import hashlib
 import json
 import mimetypes
@@ -16,6 +17,10 @@ MAX_FILES = 16
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_PACKET_BYTES = 128 * 1024
+MAX_NATIVE_PACKET_BYTES = 8 * 1024 * 1024
+MAX_NATIVE_IMAGE_BYTES = 5 * 1024 * 1024
+NATIVE_IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                      ".gif": "image/gif", ".webp": "image/webp"}
 TEXT_EXTENSIONS = {
     "", ".txt", ".md", ".rst", ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx",
     ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".csv", ".tsv",
@@ -156,6 +161,55 @@ def inline_packet(packet: str, snapshots: list[Snapshot]) -> str:
     if len(combined.encode("utf-8")) > MAX_PACKET_BYTES:
         raise ValueError("Prompt plus embedded files exceeds 128 KiB; select smaller explicit files or use a handoff")
     return combined
+
+
+def native_image_type(snapshot: Snapshot) -> str:
+    """Check suffix/signature agreement, not full decoding or visual correctness."""
+    content = snapshot.content
+    media = NATIVE_IMAGE_TYPES.get(Path(snapshot.metadata["original_name"]).suffix.lower())
+    signatures = {
+        "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg": content.startswith(b"\xff\xd8\xff"),
+        "image/gif": content.startswith((b"GIF87a", b"GIF89a")),
+        "image/webp": len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP",
+    }
+    if not media or not signatures[media]:
+        raise ValueError("Native image bytes do not match their supported filename type")
+    if not 0 < len(content) <= MAX_NATIVE_IMAGE_BYTES:
+        raise ValueError("Native images are limited to 5 MiB each; use an app handoff for larger files")
+    return media
+
+
+def automated_packet(provider: str, packet: str, snapshots: list[Snapshot]) -> tuple[str, str]:
+    """Choose only an implemented transport; never drop or convert selected files."""
+    images = [item for item in snapshots
+              if Path(item.metadata["original_name"]).suffix.lower() in NATIVE_IMAGE_TYPES]
+    if provider != "claude-code" or not images:
+        try:
+            return inline_packet(packet, snapshots), "utf8_json_in_prompt"
+        except ValueError as exc:
+            raise ValueError(f"{provider}: {exc}. For native documents/images choose a supported app handoff; files were not sent") from exc
+    if len(snapshots) > MAX_FILES:
+        raise ValueError("Select at most 16 exact files")
+    text_files = [item for item in snapshots if item not in images]
+    try:
+        text = inline_packet(packet, text_files)
+    except ValueError as exc:
+        raise ValueError("Claude Code native input currently supports PNG/JPEG/GIF/WebP plus UTF-8 source; use an app handoff for PDF/Office/other files") from exc
+    if len(text.encode("utf-8")) > MAX_PACKET_BYTES:
+        raise ValueError("Text accompanying native files exceeds 128 KiB")
+    content = [{"type": "text", "text": text}]
+    for item in images:
+        media = native_image_type(item)
+        label = {key: item.metadata[key] for key in ("attachment_id", "original_name", "sha256")}
+        content.append({"type": "text", "text": "The following native image is supplied evidence: " + json.dumps(label, ensure_ascii=False)})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": media,
+                        "data": base64.b64encode(item.content).decode("ascii")}})
+    request = json.dumps({"type": "user", "message": {"role": "user", "content": content},
+                          "parent_tool_use_id": None}, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if len(request.encode("utf-8")) > MAX_NATIVE_PACKET_BYTES:
+        raise ValueError("Native image request exceeds the 8 MiB encoded limit; choose fewer/smaller files or an app handoff")
+    return request, "claude_content_blocks"
 
 
 def stage_files(directory: Path, snapshots: list[Snapshot], folder="attachments") -> list[dict]:

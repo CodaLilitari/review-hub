@@ -87,11 +87,11 @@ An explicit anonymous choice is supported. It allows neutral introductions witho
 | `observe_usage` | Record a sourced, recent included-usage observation. |
 | `submit` | Prepare a bounded automated batch and return job IDs. |
 | `jobs` | Read project-scoped status and reconcile interrupted work. |
-| `result` | Read a bounded page of a response and its completion state. |
-| `attachment_files` | Recheck saved input/output files and return their exact paths. |
+| `result` | Read a bounded page of a response or a specified immutable turn and its completion state. |
+| `attachment_files` | Recheck saved input/output files, including a specified turn's outputs, and return their exact paths. |
 | `cancel` | Request local process-tree termination. |
 | `handoff` | Prepare a scoped app packet and optional file snapshots. |
-| `record_handoff_result` | Record a reply, attachment observation, and optional returned files. |
+| `record_handoff_result` | Record a response turn, observed completion state, attachment evidence, and optional returned files. |
 | `capabilities` | Describe implemented file/session contracts without querying accounts. |
 | `record_review` | Append advisory findings and check exact saved source citations. |
 | `review` | Read findings, revisions and refreshed integrity checks. |
@@ -110,7 +110,11 @@ Use a stable idempotency key for each logical batch. Reusing it with identical i
 
 ## Files and privacy
 
-Automated routes embed selected UTF-8 source/text snapshots in the packet. App handoffs can stage native files, including images, for a separately operated upload. Staging is not sending. See [attachment routes](docs/attachment-routes.md) for limits, provider distinctions, and returned artifacts.
+Choose a route that preserves the files needed for the task. Claude Code accepts native PNG, JPEG, GIF and WebP image blocks alongside quoted UTF-8 source/text. Its image transport permits 5 MiB per image and 8 MiB per complete encoded request, with at most 16 selected files. The current Grok Build and Antigravity headless adapters accept source/text. App handoffs stage exact native files for a separately operated upload through an app whose current controls support the format. Staging is not sending, and unsupported files must not be silently omitted or converted. See [native file support](docs/native-file-support.md) and [attachment routes](docs/attachment-routes.md) for limits, receipt checks, and returned artifacts.
+
+Every app review uses a named, saved, non-Temporary project conversation. Verify saved mode before sending and preserve its reference and history evidence afterward; the Hub records the coordinator's observations rather than inspecting the app. See [saved conversation audit](docs/app-conversation-audit.md). CLI helpers retain their separate local packet/response audit and existing isolation settings.
+
+An app response is complete only after its requested checks are finished. Record interruptions and unknown outcomes with `completion_observation`; the job stays `needs_continuation`. Continue in the same saved conversation, preserving each response and returned file set as an immutable turn. Final findings, comparison reports, and closing acknowledgment remain blocked until completion. See [interrupted reviews and continuation](docs/app-review-completion.md).
 
 Keep local identities, helper configuration, job databases, requests, responses, snapshots, account observations and session references out of version control. Raw provider receipts can contain private diagnostics or reasoning. Normal result tools expose the final answer and selected metadata, not the raw stream.
 

@@ -122,7 +122,7 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
         source.write_bytes(b"answer = 42\n")
         job = hub.handoff(str(self.project), "chatgpt", "Synthetic only", "synthetic-mcp-conversation", [str(source)])["job"]
         aid = job["attachments"][0]
-        hub.record_handoff_result(str(self.project), job["id"], "Synthetic returned advice", "Observed fixture response only.", "synthetic-mcp-conversation", observed_attachment_ids=[aid["attachment_id"]], attachment_evidence="Observed synthetic chip only.")
+        hub.record_handoff_result(str(self.project), job["id"], "Synthetic returned advice", "Observed fixture response only.", "synthetic-mcp-conversation", observed_attachment_ids=[aid["attachment_id"]], attachment_evidence="Observed synthetic chip only.", completion_observation={"status": "completed"})
         async with Client(self.params, read_timeout_seconds=15) as client:
             capability = await client.call_tool("capabilities", {"provider": "chatgpt"})
             self.assertFalse(capability.is_error)
@@ -207,10 +207,51 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
                 "response": "Synthetic fixture response; no provider was contacted.",
                 "evidence": "Local test fixture only, not a real provider observation.",
                 "conversation_ref": "synthetic-test-conversation", "acknowledgment": "not_possible",
+                "completion_observation": {"status": "completed"},
             })
             self.assertFalse(observed.is_error)
             self.assertEqual(observed.structured_content["job"]["submission"], "coordinator_observed_response")
             self.assertIn("did not send", observed.structured_content["delivery_basis"])
+
+    async def test_interrupted_app_review_continues_through_real_mcp(self) -> None:
+        async with Client(self.params, read_timeout_seconds=15) as client:
+            prepared = await client.call_tool("handoff", {
+                "project": str(self.project), "provider": "chatgpt",
+                "prompt": "Synthetic continuation contract only.", "conversation_ref": "fixture-saved-turns"})
+            self.assertFalse(prepared.is_error)
+            job_id = prepared.structured_content["job"]["id"]
+            base = {"project": str(self.project), "job_id": job_id,
+                    "conversation_ref": "fixture-saved-turns",
+                    "evidence": "Synthetic UI observation; no external app contacted."}
+            for observation in ({"status": "invented"}, {"continue_available": "true"},
+                                {"outstanding_checks": [42]}, {"verified": True}):
+                rejected = await client.call_tool("record_handoff_result", dict(base,
+                    response="Synthetic answer", completion_observation=observation))
+                self.assertTrue(rejected.is_error)
+            original = "Synthetic provisional verdict.\r\nI ran out of tool budget.\r\n"
+            partial = await client.call_tool("record_handoff_result", dict(base, response=original,
+                completion_observation={"status": "completed", "provider_stop_reason": "tool_use_limit",
+                                        "continue_available": True, "outstanding_checks": ["check source"]}))
+            self.assertFalse(partial.is_error)
+            first = partial.structured_content["job"]
+            self.assertEqual(first["state"], "needs_continuation")
+            turn_id = first["handoff_turns"][0]["turn_id"]
+            report = await client.call_tool("comparison_report", {
+                "project": str(self.project), "job_ids": [job_id]})
+            self.assertTrue(report.is_error)
+            completed = await client.call_tool("record_handoff_result", dict(base,
+                response="Synthetic source checked. Repairs still required.", previous_turn_id=turn_id,
+                completion_observation={"status": "completed", "resolved_checks": ["check source"]}))
+            self.assertFalse(completed.is_error)
+            self.assertEqual(completed.structured_content["job"]["state"], "returned_via_handoff")
+            earlier = await client.call_tool("result", {
+                "project": str(self.project), "job_id": job_id, "turn_id": turn_id})
+            self.assertFalse(earlier.is_error)
+            self.assertEqual(earlier.structured_content["answer"], original)
+            report = await client.call_tool("comparison_report", {
+                "project": str(self.project), "job_ids": [job_id]})
+            self.assertFalse(report.is_error)
+            self.assertIn(turn_id, report.structured_content["content"])
 
     async def test_model_picker_requires_choice_and_changed_catalog_reconfirmation(self) -> None:
         state = self.root / "first-model-state"
@@ -290,7 +331,7 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
         package = self.root / "fixture-package"
         source = package / "src" / "coda_review_hub"
         source.mkdir(parents=True)
-        for name in ("__init__.py", "attachments.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py", 'reviews.py', 'capabilities.py', 'reporting.py'):
+        for name in ("__init__.py", "attachments.py", "completion.py", "identity.py", "models.py", "core.py", "worker.py", "mcp_server.py", 'reviews.py', 'capabilities.py', 'reporting.py'):
             shutil.copy2(PACKAGE_ROOT / "src" / "coda_review_hub" / name, source / name)
         helper = package / "offline_helper.py"
         shutil.copy2(Path(__file__).with_name("mcp_disconnect_helper.py"), helper)

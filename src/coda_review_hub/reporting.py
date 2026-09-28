@@ -27,7 +27,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background
 """
 _STATE_CLASSES = {
     "returned": "received", "returned_via_handoff": "received",
-    "prepared": "pending", "running": "pending", "awaiting_handoff": "pending",
+    "prepared": "pending", "running": "pending", "awaiting_handoff": "pending", "needs_continuation": "pending",
     "blocked": "problem", "failed": "problem", "delivery_unknown": "problem",
     "cancelled": "problem", "interrupted": "problem",
 }
@@ -78,6 +78,13 @@ def _metadata(job: dict) -> list[tuple[str, object]]:
         ("Created", job.get("created_at")), ("Started", job.get("started_at")),
         ("Finished", job.get("finished_at")), ("Session continuity", job.get("session_continuity")),
         ("Conversation reference (text only)", job.get("conversation_ref")),
+        ("App completion observation", job.get("completion")),
+        ("Completion turn ID", job.get("completion_turn_id")),
+        ("Separate app response turns (use result with turn_id for verbatim text)", [
+            {key: turn.get(key) for key in (
+                "turn_id", "recorded_at", "previous_turn_id", "previous_answer_sha256",
+                "answer_sha256", "conversation_ref", "completion", "observed_model", "observed_mode")}
+            for turn in _items(job.get("handoff_turns")) if isinstance(turn, dict)]),
         ("Packet SHA-256", job.get("packet_sha256")), ("Answer SHA-256", job.get("answer_sha256")),
         ("Source answer integrity", job.get("source_answer_integrity")),
         ("Answer display notice", job.get("answer_notice")),

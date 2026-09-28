@@ -53,10 +53,12 @@ class AttachmentTests(unittest.TestCase):
         return self.hub.handoff(str(self.project), "gemini", "Review the exact synthetic attachments.",
                                 conversation_ref="fixture-conversation", attachments=[str(p) for p in files])
 
-    def test_binary_cli_attachment_refused_without_budget_or_job(self):
+    def test_unsupported_document_cli_attachment_refused_without_budget_or_job(self):
         observation = self.fixture.observe()
+        document = self.project / "fixture.pdf"
+        document.write_bytes(b"%PDF-1.7\nSynthetic offline fixture")
         with self.assertRaises(ValueError):
-            self.submit([self.picture])
+            self.submit([document])
         self.assertEqual(self.fixture.remaining()[observation["id"]], 1)
         self.assertEqual(self.hub.jobs(str(self.project)), [])
         self.fixture.launch.assert_not_called()
@@ -184,7 +186,8 @@ class AttachmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.hub.record_handoff_result(**without_evidence, observed_attachment_ids=identifiers)
         self.assertEqual(self.hub.jobs(str(self.project))[0]["state"], "awaiting_handoff")
-        recorded = self.hub.record_handoff_result(**receipt, observed_attachment_ids=identifiers)
+        recorded = self.hub.record_handoff_result(**receipt, observed_attachment_ids=identifiers,
+                       completion_observation={"status": "completed"})
         self.assertEqual(recorded["job"]["state"], "returned_via_handoff")
         self.assertFalse(recorded["job"]["claims_independently_verified"])
         self.assertIn("coordinator", recorded["delivery_basis"].lower())
@@ -201,7 +204,8 @@ class AttachmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.hub.record_handoff_result(**receipt)
         recorded = self.hub.record_handoff_result(**receipt,
-                       artifact_evidence="Offline synthetic artifact observation; not a live provider delivery.")
+                       artifact_evidence="Offline synthetic artifact observation; not a live provider delivery.",
+                       completion_observation={"status": "completed"})
         self.assertEqual(recorded["job"]["state"], "returned_via_handoff")
         self.assertEqual(len(recorded["job"]["returned_artifacts"]), 1)
         files = self.hub.attachment_files(str(self.project), identifier, direction="output")
