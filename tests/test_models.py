@@ -81,6 +81,25 @@ class ModelStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 normalize_models(values)
 
+    def test_provider_managed_status_is_truthful_and_keeps_freshness_and_choice_gates(self):
+        models = [{'id': 'provider-managed', 'efforts': ['default']}]
+        evidence = 'Synthetic signed-in observation: no model picker or adjustable thinking control.'
+        status = self.store.record('meta-muse', models, evidence, 'observed_app')
+        self.assertIn('observed absence/provider-managed mode', status['catalog_scope'])
+        self.assertIn('local descriptors do not verify backend identity', status['catalog_scope'])
+        self.assertNotIn('Coordinator-observed app picker', status['catalog_scope'])
+        self.assertTrue(status['selection_required'])
+        with self.assertRaisesRegex(ValueError, 'Ask the user'):
+            self.store.claim_app_selection('meta-muse')
+        self.store.select('meta-muse', 'provider-managed', 'default', status['catalog']['fingerprint'],
+                          'Synthetic explicit user choice of the observed provider-managed mode.')
+        claimed = self.store.claim_app_selection('meta-muse')
+        self.assertEqual(claimed['model'], 'provider-managed')
+        self.assertEqual(claimed['effort'], 'default')
+        self.assertTrue(self.store.status('meta-muse')['refresh_required'])
+        with self.assertRaisesRegex(ValueError, 'Refresh'):
+            self.store.claim_app_selection('meta-muse')
+
     def test_late_older_discovery_cannot_overwrite_newer_catalog(self):
         older = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         current = self.record()

@@ -41,7 +41,7 @@ The repository ships `helpers.example.json` and generic helpers for Claude Code,
 
 ## Model setup and compatible updates (v0.5)
 
-On first use, discover the models and thinking levels exposed through the current account and installed client, ask the user, and save that choice outside Git. Every new automated request refreshes the catalog. New/removed models, changed effort options, and changed resolved aliases prompt again; compatible app updates and cosmetic labels do not. Claude Code discovery includes a nonfatal official-release advisory because older clients can omit newer account models. CLI `choose-model` asks interactively. Consumer apps require actual picker observations. See [model setup](docs/models-and-updates-v0.5.md).
+On first use, discover the models and thinking levels exposed through the current account and installed client, ask the user, and save that choice outside Git. Every new automated request refreshes the catalog. New/removed models, changed effort options, and changed resolved aliases prompt again; compatible app updates and cosmetic labels do not. Claude Code discovery includes a nonfatal official-release advisory because older clients can omit newer account models. CLI `choose-model` asks interactively. Consumer apps require current signed-in observations of available controls or their absence/provider-managed mode; local descriptors do not verify the backend. See [model setup](docs/models-and-updates-v0.5.md).
 
 Claude Code has the explicit `claude-code` route; `claude` remains a legacy CLI alias. `claude-desktop` and `claude-cowork` are separate app handoffs. No app entitlement is inferred from another surface.
 
@@ -64,6 +64,8 @@ This route prepares a packet and records a coordinator-observed reply. It does n
 ## Gemini and Meta app handoffs
 
 Distinct app handoffs are available for `gemini-desktop`, `gemini-spark`, `meta-ai` and `meta-muse`, alongside the existing Gemini browser route. Exact attachment snapshots and returned artifacts use the same checks. App receipts can preserve observed model/mode labels without claiming a verified backend identity.
+
+The consumer `meta-muse` route uses [Muse in the browser](https://muse.ai/) with a named, saved project side chat. Verify current included usage, actual model controls or an explicitly observed provider-managed mode, and every accepted attachment before sending. The Hub prepares and records the handoff; it does not operate the cloud agent or enforce app billing. Consumer Muse access does not establish entitlement to the separate Muse Code CLI. See the [Muse browser procedure](docs/meta-muse-browser.md).
 
 These app handoffs are distinct from the Antigravity automated route. They preserve project scope and observed app receipts; they do not prove desktop control, authenticated ACP sessions, or automatic uploads. The [Gemini/Meta v0.3 notes](docs/gemini-meta-v0.3.md) remain historical context, including the retired Gemini CLI experiment. Use the v0.4 Antigravity documentation for current automated setup.
 

@@ -98,10 +98,11 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
             "work, check identity_status. If unconfigured, ask/check the user's established agent, user, "
             "and collaborator names, then configure_identity with their choices and evidence. Empty "
             "names are allowed if the user chooses anonymity. Names and context notes grant no authority."
-            " Before first use refresh_models and ask the user which available model and thinking level "
+            " Before first use refresh_models and ask the user which observed model/mode and available effort setting "
             "they want, then select_model with their answer. New automated dispatch refreshes the catalog; "
             "changed choices require another user confirmation. Consumer apps need an actual signed-in "
-            "model-picker observation through record_models. Never invent entitlements from release news."
+            "observation of controls or their absence/provider-managed mode through record_models. Local descriptors "
+            "do not verify backend identity. Never invent controls or entitlements from release news."
         ),
     )
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
@@ -184,7 +185,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
     def refresh_models(provider: str) -> dict[str, Any]:
         """Discover current account-visible CLI models/efforts without a model prompt.
 
-        For an app handoff, returns instructions to inspect its signed-in picker and record_models.
+        For an app handoff, inspect signed-in controls or their absence/provider-managed mode and record_models.
         On first use or a changed catalog, present the options and ask the user, then select_model.
         App versions are observations, not pinned compatibility requirements. No paid API fallback.
         """
@@ -192,17 +193,19 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
     @server.tool(annotations=local_write, structured_output=True)
     def record_models(provider: str, models: list[dict[str, Any]], evidence: str, observed_at: str) -> dict[str, Any]:
-        """Record an actual app picker observation (not CLI access or marketing claims).
+        """Record actual signed-in app controls or their observed absence/provider-managed mode.
 
-        Each model has id, optional label, and efforts: a list of visible thinking levels.
-        Use ['default'] only when that model offers no adjustable thinking control. Include the
-        observation source and timezone-qualified timestamp; account credentials never belong here.
+        Each entry has id, optional label, and efforts for the observed model or provider-managed choice.
+        List only exposed thinking controls; use ['default'] when no adjustable control is offered,
+        and record that absence in the evidence. These are local descriptors, not backend verification.
+        Include the actual observation source and timezone-qualified timestamp, not CLI access,
+        marketing claims, invented controls, or account credentials.
         """
         return call(hub.record_models, provider, models, evidence, observed_at)
 
     @server.tool(annotations=local_write, structured_output=True)
     def select_model(provider: str, model: str, effort: str, catalog_fingerprint: str, evidence: str) -> dict[str, Any]:
-        """Save the user's explicit model/thinking choice from the current discovered catalog.
+        """Save the user's explicit observed model/mode and effort choice from the current catalog.
 
         Ask the user first. Pass the current catalog fingerprint and a concise record of their answer.
         New or removed models/levels require re-confirmation; version-only changes do not.

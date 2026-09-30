@@ -44,7 +44,7 @@ def normalize_models(values):
         seen.add(model)
         levels = item.get("efforts")
         if not isinstance(levels, list) or not 1 <= len(levels) <= 32:
-            raise ValueError("Each model needs its observed effort options; use default if not adjustable")
+            raise ValueError("Each model/mode needs its observed effort options; use default if no adjustable control is exposed")
         efforts = [text(x, "effort", 100) for x in levels]
         if len(set(efforts)) != len(efforts):
             raise ValueError("Effort options must be unique")
@@ -108,7 +108,7 @@ class ModelStore:
             except (ValueError, TypeError, AttributeError):
                 raise ValueError("Catalog observation needs a timezone-qualified timestamp") from None
             if not time.time() - FRESH_SECONDS <= checked <= time.time() + 30:
-                raise ValueError("Refresh the account's model picker before recording its catalog")
+                raise ValueError("Refresh the account's model/mode observation before recording its catalog")
         # Version/labels can change without changing the user's available choices.
         signature = [{"id": m["id"], "efforts": m["efforts"], "resolved_id": m["resolved_id"]} for m in models]
         fingerprint = hashlib.sha256(canonical(signature).encode()).hexdigest()
@@ -147,11 +147,12 @@ class ModelStore:
                 "catalog_scope": ("Installed client's account-visible catalog; an older client can omit newer account models. "
                                   "Check runtime_update and refresh after updating; a catalog is not proof of the latest global options."
                                   if catalog and catalog["source"] == "official_cli" else
-                                  "Coordinator-observed app picker; verify the current picker again at the actual send."),
+                                  "Coordinator-recorded signed-in controls or observed absence/provider-managed mode; local descriptors do not verify backend identity. Verify current app state again at the actual send."
+                                  if catalog else "No account model/mode observation has been recorded."),
                 "reason": "first_use" if chosen is None else "catalog_changed" if changed else "unchanged",
-                "next": ("Refresh the account's available models and thinking levels" if not fresh else
-                         "Ask the user to choose a model and thinking level, then select_model" if needed else
-                         "Use the saved choice; automated dispatch rechecks availability before sending"),
+                "next": ("Refresh the account's model/mode options and any available thinking controls" if not fresh else
+                         "Ask the user to choose a model or observed provider-managed mode and an available effort setting, then select_model" if needed else
+                         "Use the saved local choice; recheck app observations before a manual send. Automated dispatch rechecks availability"),
                 "sent": False}
 
     def select(self, provider, model, effort, catalog_fingerprint, evidence):
@@ -170,7 +171,7 @@ class ModelStore:
                 raise ValueError("Available choices changed while the user was choosing; present the new catalog")
             match = next((m for m in catalog["models"] if m["id"] == model), None)
             if not match or effort not in match["efforts"]:
-                raise ValueError("Choose a model and thinking level exposed by this account")
+                raise ValueError("Choose a model/mode and effort setting exposed by this account")
             choice = {"model": model, "effort": effort, "catalog_fingerprint": catalog_fingerprint,
                       "evidence": evidence, "chosen_at": datetime.now(timezone.utc).isoformat()}
             c.execute("INSERT OR REPLACE INTO choices VALUES (?,?)", (provider, canonical(choice)))
@@ -204,7 +205,7 @@ class ModelStore:
             yield selected
 
     def claim_app_selection(self, provider):
-        """Consume one picker observation before exposing a prepared handoff.
+        """Consume one app control/mode observation before exposing a prepared handoff.
 
         This claim remains consumed if later file preparation fails. It verifies
         preparation time only; actual sending is still a coordinator action.
@@ -214,7 +215,7 @@ class ModelStore:
             status = self._status(c, provider)
             selected = self._require(status)
             if status["catalog"]["source"] != "observed_app":
-                raise ValueError("App handoffs require a current observed app picker")
+                raise ValueError("App handoffs require a current observation of signed-in controls or their absence/provider-managed mode")
             checked_at = status["catalog"]["checked_at"]
             c.execute("INSERT OR REPLACE INTO app_uses VALUES (?,?)", (provider, checked_at))
         return {**selected, "catalog_checked_at": checked_at}

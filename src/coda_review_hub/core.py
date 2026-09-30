@@ -24,6 +24,7 @@ from . import __version__
 from .identity import IdentityStore
 from .models import ModelStore, discover
 from .reviews import normalize_review, check_anchors, default_lineage, text as bounded_text
+from .capabilities import handoff_route_metadata
 
 BASE = Path(__file__).resolve().parents[2]
 ACTIVE = ("prepared", "running")
@@ -42,7 +43,23 @@ HANDOFF = {
     "gemini-desktop": "Use the signed-in Gemini desktop app; verify included usage and the selected model and thinking setting for each conversation. Keep disclosure to the authorized packet. Consumer app access does not establish Gemini CLI entitlement.",
     "gemini-spark": "Use the authorized Gemini Spark conversation and only the authorized packet. The exact backend is unverified; record visible model or mode labels only as coordinator observations. Do not expand tool or workspace access or infer CLI entitlement from consumer access.",
     "meta-ai": "Use the authorized Meta AI conversation and only the authorized packet. Thinking is the strongest exposed mode observed for this route, not a universal model ranking; verify the current visible mode. Consumer app access does not establish CLI entitlement.",
-    "meta-muse": "Use the authorized Meta Muse conversation and only the authorized packet. The exact backend is unverified; record visible model or mode labels only as coordinator observations. Do not expand tool or workspace access or infer CLI entitlement from consumer access.",
+    "meta-muse": (
+        "Use the signed-in consumer Muse browser at https://muse.ai/ and only the authorized packet. "
+        "Open Chats and select or create a named project-specific side chat; verify that it is saved, "
+        "non-Temporary, and limited to this project rather than sending into an unrelated main chat. "
+        "Before each send, observe fresh included usage and verify that the chosen action will not use paid "
+        "credits, extra usage, or a paid fallback; if this cannot be established, stop without sending. "
+        "This is a coordinator check, not a Hub-enforced app billing gate. Inspect the current model/thinking "
+        "picker; if there is no adjustable picker, record the explicitly observed provider-managed mode "
+        "with default effort and its evidence. Do not invent a model or thinking level. The exact backend "
+        "is unverified; record visible model or mode labels only as coordinator observations. Verify the "
+        "current app accepts each exact selected file, attach only the verified allowlist, and confirm "
+        "attachment chips before sending; local snapshots alone do not establish upload or interpretation. "
+        "Keep the cloud agent limited to authorized inputs and actions; do not enable new connectors, "
+        "grant broad device/workspace access, or expand the task. Muse Code is a separate CLI entitlement, "
+        "not a fallback for this consumer route. Preserve response, files, and completion observations in "
+        "this same saved side chat for audit."
+    ),
     "claude-cowork": "Select and verify this project's exact authorized folders in Cowork each time.",
     "grok-bot": "Use the actual project-scoped bot conversation; its cloud computer is shared, not an isolation boundary.",
     "microsoft-copilot": "Use the signed-in consumer app with the strongest verified appropriate mode; no consumer subscription CLI route is established.",
@@ -202,6 +219,7 @@ class Hub:
                        "provider_resume": False}
                       for p, reason in RETIRED.items())
         routes.extend({"provider": p, "transport": "coordinator_handoff", "live_ready": False, "instructions": s,
+                       **handoff_route_metadata(p),
                        "model_setup": self.models.status(p),
                        "collaborator_name": identity["collaborators"].get(p), "configured_context": self.identity.note(p)}
                       for p, s in HANDOFF.items())
@@ -220,7 +238,7 @@ class Hub:
         provider = LEGACY_AUTO.get(provider, provider)
         if provider in HANDOFF:
             return {**self.model_status(provider), "refresh_required": True,
-                    "next": "Inspect this signed-in app's current model and thinking picker, then record_models. Do not infer app access from a CLI or marketing page."}
+                    "next": "Inspect this signed-in app's current model/thinking controls or their absence and provider-managed mode, then record_models with that evidence. Do not invent a picker, backend model, or effort level; app access cannot be inferred from a CLI or marketing page."}
         pin = self._pins(provider)
         started_at = now()
         result = discover(pin)
@@ -691,12 +709,19 @@ class Hub:
         data = {"id": job, "batch_id": job, "project": project, "provider": provider, "state": "awaiting_handoff",
                 "model": selected["model"], "effort": selected["effort"], "catalog_fingerprint": selected["catalog_fingerprint"],
                 "model_picker_observed_at": selected["catalog_checked_at"],
-                "model_selection_basis": "Coordinator-observed picker at preparation; verify again at actual send",
+                "model_selection_basis": "Coordinator-observed app model options or explicitly provider-managed mode at preparation; local descriptors do not verify backend identity; verify again at actual send",
+                "backend_model_verified": False,
                 "created_at": now(), "submission": "not_sent", "conversation_ref": conversation_ref,
-                "instructions": HANDOFF[provider] + " " + HANDOFF_CONVERSATION_POLICY + " Verify the current account model picker before sending; use the user's saved model " + selected["model"] + " and thinking level " + selected["effort"] + ". If options changed, refresh the catalog and ask the user again.", "configured_context": self.identity.note(provider),
+                "instructions": HANDOFF[provider] + " " + HANDOFF_CONVERSATION_POLICY
+                    + " Verify the app's current model options or explicitly observed provider-managed mode before sending. "
+                    + "Saved local selection descriptor: " + selected["model"] + "; effort descriptor: " + selected["effort"]
+                    + ". Apply a model or adjustable thinking choice only when the corresponding control is actually offered. "
+                    + "The default descriptor does not assert an exposed thinking level, and neither descriptor verifies backend identity. "
+                    + "If options changed, refresh the catalog and ask the user again.", "configured_context": self.identity.note(provider),
                 "collaborator_name": identity["collaborators"].get(provider), "evidence_directory": str(directory),
                 "identity_snapshot": {k: identity[k] for k in ("agent_name", "user_name", "collaborators")},
                 "packet_sha256": digest(request.encode("utf-8")), "claims_independently_verified": False}
+        data.update(handoff_route_metadata(provider))
         if manifest:
             data.update(attachments=manifest, attachment_manifest_sha256=manifest_digest(manifest),
                         attachment_transport="app_file_handoff", attachment_delivery="prepared_not_sent")

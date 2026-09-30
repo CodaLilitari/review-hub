@@ -29,6 +29,31 @@ INPUT_TRANSPORTS = frozenset({"utf8_json_in_prompt", "claude_content_blocks", "a
 OUTPUT_TRANSPORTS = frozenset({"app_file_handoff", "returned_file_snapshot"})
 
 
+def handoff_route_metadata(provider: str) -> dict:
+    """Describe an app entry route without claiming live access or dispatch."""
+    if provider != "meta-muse":
+        return {}
+    return {
+        "entry_url": "https://muse.ai/",
+        "app_surface": "browser",
+        "agent_runtime": "provider_cloud",
+        "dispatch_mode": "manual_coordinator",
+        "current_app_observation_required": True,
+        "billing_enforcement": "coordinator_observation_only",
+        "required_observations": [
+            "signed_in_account", "included_usage_and_no_paid_fallback",
+            "model_picker_or_explicit_provider_managed_mode", "saved_project_side_chat",
+            "supported_attachment_controls", "authorized_agent_scope",
+        ],
+        "entitlement_note": (
+            "This is the consumer Muse browser route. A supported Windows consumer app or CLI "
+            "has not been verified. Muse Code is a separate coding CLI with its own subscription "
+            "or API credentials; consumer Muse access does not establish that entitlement. "
+            "No automatic CLI, API, paid-credit, or subscription-purchase fallback is permitted."
+        ),
+    }
+
+
 def route_capabilities(provider: str) -> dict:
     """Return a fresh route contract; null means current app evidence is needed.
 
@@ -85,6 +110,7 @@ def route_capabilities(provider: str) -> dict:
         result["file_guidance"] = ("Choose a supported app handoff for formats outside this CLI's implemented input types; "
                                    "do not silently omit files or label extracted text as native input.")
     elif canonical in HANDOFF_PROVIDERS:
+        result.update(handoff_route_metadata(canonical))
         result.update(
             transport="coordinator_handoff", available_for_new_work=True,
             current_app_observation_required=True,

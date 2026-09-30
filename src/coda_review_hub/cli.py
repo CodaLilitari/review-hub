@@ -37,7 +37,7 @@ def parser() -> argparse.ArgumentParser:
     models = commands.add_parser("models", help="Read account model choices; --refresh probes a CLI without generation.")
     models.add_argument("--provider", required=True)
     models.add_argument("--refresh", action="store_true")
-    choose = commands.add_parser("choose-model", help="Refresh and interactively choose an available model and thinking level.")
+    choose = commands.add_parser("choose-model", help="Refresh and choose an observed model/mode and offered effort setting.")
     choose.add_argument("--provider", required=True)
     for name, help_text in (
         ("configure-identity", "Save checked user naming choices locally; this replaces the full profile."),
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("choose-model needs an interactive terminal; use models and select-model for a coordinator")
             status = hub.model_status(args.provider)
             # A coordinator must inspect consumer apps separately. Use its
-            # fresh picker observation here; CLI routes always rediscover.
+            # fresh control/mode observation here; CLI routes always rediscover.
             if status["refresh_required"] or not status["catalog"] or status["catalog"]["source"] != "observed_app":
                 status = hub.refresh_models(args.provider)
             if status["refresh_required"]:
@@ -126,10 +126,10 @@ def main(argv: list[str] | None = None) -> int:
                       "You may choose from these current options, or update the app and refresh the catalog first.", file=sys.stderr)
             elif update and update.get("status") == "unavailable":
                 print("The latest app release could not be checked. These choices reflect the installed client's account catalog.", file=sys.stderr)
-            model = _choose("Choose the model for " + args.provider, catalog["models"], lambda item: item["label"] + " (" + item["id"] + ")")
-            effort = _choose("Choose its thinking level", model["efforts"], str)
+            model = _choose("Choose the observed model/mode for " + args.provider, catalog["models"], lambda item: item["label"] + " (" + item["id"] + ")")
+            effort = _choose("Choose its offered effort setting (default if not adjustable)", model["efforts"], str)
             value = hub.select_model(args.provider, model["id"], effort, catalog["fingerprint"],
-                                     "User selected model and thinking level in the interactive CLI.")
+                                     "User selected observed model/mode and effort descriptors in the interactive CLI; no backend verification implied.")
         elif args.command == "record-models":
             value = hub.record_models(**_payload(args.jsonfile, {"provider", "models", "evidence", "observed_at"}))
         elif args.command == "select-model":
