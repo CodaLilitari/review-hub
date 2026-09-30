@@ -34,6 +34,17 @@ MAX_NATIVE_PACKET_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_INPUT_IMAGES = 16
 MAX_METADATA_BYTES = 4 * 1024 * 1024
+MAX_PARTIAL_ANSWER_BYTES = 1024 * 1024
+RESULT_SUBTYPES = {"success", "error_max_turns", "error_max_budget_usd",
+                   "error_during_execution", "error_max_structured_output_retries"}
+RESPONSE_STOP_REASONS = {"end_turn", "stop_sequence", "max_tokens", "tool_use",
+                         "pause_turn", "refusal", "model_context_window_exceeded", "tool_deferred"}
+RESPONSE_TERMINAL_REASONS = {"completed", "success", "end_turn", "stop_sequence",
+                             "max_turns", "tool_deferred", "aborted_streaming", "aborted_tools",
+                             "hook_stopped", "stop_hook_prevented", "background_requested",
+                             "blocking_limit", "rapid_refill_breaker", "prompt_too_long", "image_error",
+                             "model_error", "api_error", "malformed_tool_use_exhausted", "budget_exhausted",
+                             "structured_output_retry_exhausted", "tool_deferred_unavailable", "turn_setup_failed"}
 RELEASE_VERSION_URL = "https://downloads.claude.ai/claude-code-releases/latest"
 MODEL_BILLING_SOURCE = "https://code.claude.com/docs/en/model-config#fable-and-usage-credits"
 SYSTEM_PROMPT = (
@@ -577,12 +588,91 @@ def validate_input_packet(packet: bytes, input_format: str = "text") -> list[str
     return images
 
 
+def response_contradictions(response: dict) -> bool:
+    # These fields are optional, but only an empty list is compatible with a
+    # successful no-tools review. Never copy error text or denied tool inputs.
+    return any(key in response and (not isinstance(response[key], list) or response[key])
+               for key in ("errors", "permission_denials")) or bool(response.get("error"))
+
+
+def safe_reason(value: str | None, choices: set[str]) -> str | None:
+    return value if value is None or value in choices else "unknown"
+
+
+def capture_incomplete_response(response: object) -> tuple[str | None, dict] | None:
+    """Recognize terminal envelopes without retaining private failure diagnostics.
+
+    Missing text is normal for documented SDK error results. A missing or
+    malformed terminal envelope establishes no response receipt. Only known
+    limit/interruption results may retain an exact, bounded partial answer.
+    """
+    if (not isinstance(response, dict) or response.get("type") != "result"
+            or not isinstance(response.get("subtype"), str)
+            or response["subtype"] not in RESULT_SUBTYPES
+            or type(response.get("is_error")) is not bool
+            or any(response.get(key) is not None and not isinstance(response[key], str)
+                   for key in ("stop_reason", "terminal_reason"))
+            or ("num_turns" in response and
+                (type(response["num_turns"]) is not int or response["num_turns"] < 0))
+            or ("result" in response and not isinstance(response["result"], str))):
+        return None
+    text = response.get("result")
+    if response["subtype"] == "success" and (not isinstance(text, str) or not text.strip()):
+        return None
+    subtype = response["subtype"]
+    stop = safe_reason(response.get("stop_reason"), RESPONSE_STOP_REASONS)
+    terminal = safe_reason(response.get("terminal_reason"), RESPONSE_TERMINAL_REASONS)
+    reason, preserve_partial = "unknown", False
+    # The terminal result/error takes precedence over a previous model stop.
+    # Otherwise a provider diagnostic paired with max_tokens could be mistaken
+    # for partial review prose. Only explicit limit error subtypes permit it.
+    if subtype == "error_max_budget_usd":
+        reason, preserve_partial = "budget_limit", True
+    elif subtype == "error_max_turns":
+        reason, preserve_partial = "tool_limit", True
+    elif response["is_error"] or subtype != "success" or response_contradictions(response):
+        reason = "provider_error"
+    elif terminal in ("blocking_limit", "rapid_refill_breaker", "prompt_too_long", "image_error",
+                      "model_error", "api_error", "malformed_tool_use_exhausted",
+                      "structured_output_retry_exhausted", "tool_deferred_unavailable", "turn_setup_failed"):
+        reason = "provider_error"
+    elif terminal == "budget_exhausted":
+        reason, preserve_partial = "budget_limit", True
+    elif terminal == "max_turns":
+        reason, preserve_partial = "tool_limit", True
+    elif stop in ("max_tokens", "model_context_window_exceeded"):
+        reason, preserve_partial = "output_limit", True
+    elif terminal in ("tool_deferred", "aborted_streaming", "aborted_tools", "hook_stopped",
+                      "stop_hook_prevented", "background_requested") or stop in ("tool_use", "tool_deferred", "pause_turn"):
+        reason, preserve_partial = "incomplete", True
+    elif stop == "refusal":
+        reason = "incomplete"
+    receipt = {"response_received": True, "completion_reason": reason,
+               "response_subtype": subtype, "response_stop_reason": stop,
+               "response_terminal_reason": terminal, "response_is_error": response["is_error"],
+               "model_review_completed": False, "partial_answer_available": False,
+               "automatic_retry_attempted": False,
+               "recovery_guidance": "Inspect the incomplete result before a new bounded review; no automatic retry or session resume was attempted."}
+    if "num_turns" in response:
+        receipt["num_turns"] = response["num_turns"]
+    if preserve_partial and isinstance(text, str) and text.strip():
+        try:
+            encoded = text.encode("utf-8")
+        except UnicodeEncodeError:
+            encoded = b""
+        if 0 < len(encoded) <= MAX_PARTIAL_ANSWER_BYTES:
+            receipt.update(partial_answer_available=True, partial_answer_sha256=sha256(encoded))
+            return text, receipt
+    return None, receipt
+
+
 def capture_response(response: dict, returncode: int) -> tuple[str, dict]:
     if not isinstance(response, dict):
         raise ValueError("Claude Code returned a malformed response")
     text = response.get("result")
     if (returncode or response.get("type") != "result" or response.get("subtype") != "success"
             or response.get("is_error") is not False or not isinstance(text, str) or not text.strip()
+            or response_contradictions(response)
             or response.get("stop_reason") not in (None, "end_turn", "stop_sequence")
             or response.get("terminal_reason") not in (None, "completed", "success", "end_turn", "stop_sequence")):
         raise ValueError("Claude Code did not report a successfully completed review")
@@ -591,7 +681,11 @@ def capture_response(response: dict, returncode: int) -> tuple[str, dict]:
         models.add(response["model"])
     if isinstance(response.get("modelUsage"), dict):
         models.update(key for key in response["modelUsage"] if isinstance(key, str))
-    return text, {"model_review_completed": True, "verified_response_models": [],
+    return text, {"model_review_completed": True, "response_received": True,
+                  "completion_reason": "completed", "response_subtype": "success",
+                  "response_stop_reason": response.get("stop_reason"),
+                  "response_terminal_reason": response.get("terminal_reason"), "response_is_error": False,
+                  "partial_answer_available": False, "verified_response_models": [],
                   "observed_cli_models": sorted(models), "num_turns": response.get("num_turns"),
                   "model_evidence": "provider response metadata; backend not independently attested"}
 
@@ -648,6 +742,8 @@ def main() -> int:
         parser.error(str(error))
     metadata = {"status": "not_sent", "sent": False, "submission_attempted": False,
                 "model_review_completed": False, "reviewer": "Claude Code",
+                "response_received": False, "partial_answer_available": False,
+                "automatic_retry_attempted": False,
                 "requested_model": args.model, "requested_effort": args.effort,
                 "input_format": args.input_format,
                 "input_transport": "claude_content_blocks" if args.input_format == "stream-json" else "text",
@@ -691,17 +787,35 @@ def main() -> int:
             try:
                 response = json.loads(result["stdout"])
             except (ValueError, UnicodeDecodeError):
+                metadata["status"] = "delivery_unknown"
                 raise ValueError("Claude Code returned invalid response JSON") from None
-            text, receipt = capture_response(response, result["returncode"])
+            try:
+                text, receipt = capture_response(response, result["returncode"])
+            except ValueError:
+                captured = capture_incomplete_response(response)
+                if captured is None:
+                    metadata["status"] = "delivery_unknown"
+                    raise ValueError("Claude Code did not return a recognized terminal result") from None
+                partial_text, receipt = captured
+                metadata.update(receipt, status="response_received_incomplete")
+                if partial_text is not None:
+                    metadata["partial_answer_available"] = False
+                    partial_hash = metadata.pop("partial_answer_sha256")
+                    (output / "partial_result.txt").write_bytes(partial_text.encode("utf-8"))
+                    metadata.update(partial_answer_available=True, partial_answer_sha256=partial_hash)
+                raise ValueError("Claude Code returned an incomplete review; inspect its sanitized completion receipt") from None
             # Authentication/error output can contain login URLs or codes. Only
             # retain a validated successful review object, never raw failure logs.
+            metadata.update(receipt, status="response_received_incomplete",
+                            model_review_completed=False, completion_reason="unknown")
             (output / "response.raw.json").write_bytes(result["stdout"])
             (output / "result.txt").write_text(text + "\n", encoding="utf-8")
             metadata.update(receipt, status="completed")
             exit_code = 0
     except Exception as error:
         if metadata["status"] == "not_sent":
-            metadata["status"] = "review_failed" if metadata["sent"] else "preflight_failed"
+            metadata["status"] = ("response_received_incomplete" if metadata["response_received"] else
+                                  "delivery_unknown" if metadata["sent"] else "preflight_failed")
         metadata["error"] = str(error) if isinstance(error, ValueError) else "Claude Code operation failed; inspect local evidence"
     finally:
         metadata["finished_utc"] = utc_now()

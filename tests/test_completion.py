@@ -54,7 +54,7 @@ class CompletionTests(unittest.TestCase):
                 self.assertIn("explicit_completion_observation", result["signals"])
 
     def test_unknown_nonempty_reason_blocks_even_reported_completion(self):
-        for reason in ("future_finish", "stop", "unknown", "tool_use", "custom_done"):
+        for reason in ("future_finish", "stop", "unknown", "custom_done", "error_max_budget_usd", "max_budget_usd"):
             with self.subTest(reason=reason):
                 result = self.classify({"status": "completed", "provider_stop_reason": reason})
                 self.assertEqual(result["status"], "unknown")
@@ -65,6 +65,63 @@ class CompletionTests(unittest.TestCase):
         result = self.classify({"status": "completed", "provider_stop_reason": "  MAX-TOKENS  "})
         self.assertEqual(result["status"], "output_limit")
         self.assertEqual(result["provider_stop_reason"], "MAX-TOKENS")
+
+    def test_tool_call_and_turn_exhaustion_stop_reasons_beat_reported_completion(self):
+        for reason in ("tool_call_limit", "max_tool_calls", "max_turns", "error_max_turns", "MAX-TURNS"):
+            with self.subTest(reason=reason):
+                result = self.classify({"status": "completed", "provider_stop_reason": reason})
+                self.assertEqual(result["status"], "tool_limit")
+                self.assertFalse(result["complete"])
+
+    def test_pause_tool_request_and_refusal_are_incomplete_not_tool_exhaustion(self):
+        for reason in ("pause_turn", "tool_use", "refusal"):
+            with self.subTest(reason=reason):
+                result = self.classify({"status": "completed", "provider_stop_reason": reason})
+                self.assertEqual(result["status"], "incomplete")
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["reported_status"], "completed")
+
+    def test_bounded_tool_call_and_turn_limit_messages_block_false_final(self):
+        phrases = (
+            "I've reached the maximum number of tool calls. The source checks are still unfinished.",
+            "Tool call limit reached. Please click Continue so I can finish the audit.",
+            "I ran out of tool calls before checking the figures.",
+            "I have exhausted my tool budget. I cannot finish the last source check in this response.",
+            "Tool\u2011call budget exhausted.", "Reached the maximum allowed tool uses.",
+            "Exceeded the maximum number of 10 tools.", "I hit my turn limit.",
+            "The turn limit has been reached.", "I reached the maximum number of turns.",
+        )
+        for phrase in phrases:
+            for source in ("response", "evidence"):
+                with self.subTest(phrase=phrase, source=source):
+                    result = self.classify({"status": "completed", "provider_stop_reason": "end_turn"},
+                                          **{source: phrase})
+                    self.assertEqual(result["status"], "tool_limit")
+                    self.assertFalse(result["complete"])
+                    self.assertIn(source + "_cue:tool_limit", result["signals"])
+
+    def test_tool_configuration_discussion_and_currency_budget_are_not_tool_cues(self):
+        for response in ("Review complete. Consider increasing the tool call limit.",
+                         "Set --max-turns 10; the maximum number of tool calls is configurable.",
+                         "Review complete. The tool supports a maximum of ten turns."):
+            with self.subTest(response=response):
+                result = self.classify({"status": "completed"}, response=response)
+                self.assertTrue(result["complete"])
+                self.assertFalse(any("_cue:" in signal for signal in result["signals"]))
+        currency = self.classify({"status": "completed", "provider_stop_reason": "error_max_budget_usd"},
+                                 response="I reached the maximum budget of $1.")
+        self.assertEqual(currency["status"], "unknown")
+        self.assertFalse(currency["complete"])
+        self.assertFalse(any("_cue:tool_limit" in signal for signal in currency["signals"]))
+
+    def test_historical_new_tool_call_cue_remains_conservative_after_check_closure(self):
+        result = self.classify({"status": "completed", "resolved_checks": ["Check figures"]},
+                              prior=["Check figures"],
+                              response="Earlier the app said 'Tool call limit reached'; the figures are now checked.")
+        self.assertEqual(result["status"], "tool_limit")
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["outstanding_checks"], [])
+        self.assertIn("may quote earlier interruptions", result["basis"])
 
     def test_tool_limit_cues_in_response_or_evidence_block_false_final(self):
         for phrase in ("reached its tool-use limit", "ran out of tool budget", "REACHED ITS TOOL\u2011USE LIMIT",

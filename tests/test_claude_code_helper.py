@@ -503,6 +503,236 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         self.assertEqual(receipt["verified_response_models"], [])
         self.assertEqual(receipt["observed_cli_models"], ["future-model"])
 
+    def invoke_response_fixture(self, response, *, returncode=1, timed_out=False):
+        packet = self.root / "failure-packet.txt"
+        packet.write_text("Synthetic fixture only", encoding="utf-8")
+        output = self.root / ("response-fixture-" + str(len(list(self.root.iterdir()))))
+        argv = ["helper", "--config", str(self.config_file), "--prompt-file", str(packet),
+                "--output-dir", str(output), "--model", "opus", "--effort", "max"]
+        stdout = response if isinstance(response, bytes) else json.dumps(response).encode("utf-8")
+        fixture = {"stdout": stdout, "stderr": b"private-diagnostic-never-save",
+                   "returncode": returncode, "timed_out": timed_out, "runtime_seconds": 0.01}
+        with patch.object(sys, "argv", argv), \
+                patch.object(helper, "discover_in_workspace", return_value=self.catalog()), \
+                patch.object(helper, "run_child", return_value=fixture) as child, redirect_stdout(io.StringIO()):
+            exit_code = helper.main()
+        self.assertEqual(child.call_count, 1)
+        self.assertNotIn("--resume", child.call_args.args[0])
+        self.assertNotIn("--continue", child.call_args.args[0])
+        metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+        self.assertFalse(metadata["automatic_retry_attempted"])
+        return output, metadata, exit_code
+
+    def test_limit_results_preserve_exact_partial_without_becoming_final(self):
+        text = "Partial fixture π 🖤\r\nPreserve these trailing spaces  "
+        fixtures = [
+            ({"subtype": "error_max_turns", "terminal_reason": "max_turns"}, "tool_limit"),
+            ({"subtype": "error_max_budget_usd", "terminal_reason": "budget_exhausted"}, "budget_limit"),
+            ({"stop_reason": "max_tokens"}, "output_limit"),
+            ({"stop_reason": "model_context_window_exceeded"}, "output_limit"),
+            ({"stop_reason": "pause_turn"}, "incomplete"),
+            ({"terminal_reason": "aborted_streaming"}, "incomplete"),
+            ({"terminal_reason": "aborted_tools"}, "incomplete"),
+            ({"terminal_reason": "tool_deferred"}, "incomplete"),
+            ({"terminal_reason": "hook_stopped"}, "incomplete"),
+            ({"terminal_reason": "stop_hook_prevented"}, "incomplete"),
+            ({"terminal_reason": "background_requested"}, "incomplete"),
+            ({"stop_reason": "tool_deferred"}, "incomplete"),
+        ]
+        for change, expected in fixtures:
+            response = {"type": "result", "subtype": "success", "is_error": False,
+                        "result": text, "num_turns": 2, **change}
+            if response["subtype"] != "success":
+                response["is_error"] = True
+                response["errors"] = ["private-error-code-never-save"]
+            with self.subTest(change=change):
+                output, metadata, exit_code = self.invoke_response_fixture(response)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(metadata["status"], "response_received_incomplete")
+                self.assertTrue(metadata["response_received"])
+                self.assertEqual(metadata["completion_reason"], expected)
+                self.assertFalse(metadata["model_review_completed"])
+                self.assertTrue(metadata["partial_answer_available"])
+                self.assertEqual((output / "partial_result.txt").read_bytes(), text.encode("utf-8"))
+                self.assertEqual(metadata["partial_answer_sha256"], helper.sha256(text.encode("utf-8")))
+                self.assertFalse((output / "result.txt").exists())
+                self.assertFalse((output / "response.raw.json").exists())
+                combined = b"".join(path.read_bytes() for path in output.iterdir())
+                self.assertNotIn(b"private-error-code-never-save", combined)
+                self.assertNotIn(b"private-diagnostic-never-save", combined)
+
+    def test_error_terminal_result_without_text_is_received_but_not_a_partial_answer(self):
+        for subtype in ("error_max_turns", "error_max_budget_usd", "error_during_execution",
+                        "error_max_structured_output_retries"):
+            response = {"type": "result", "subtype": subtype, "is_error": True,
+                        "errors": ["private-auth-code-never-save"], "stop_reason": "end_turn"}
+            with self.subTest(subtype=subtype):
+                output, metadata, exit_code = self.invoke_response_fixture(response)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(metadata["status"], "response_received_incomplete")
+                self.assertTrue(metadata["response_received"])
+                self.assertFalse(metadata["partial_answer_available"])
+                self.assertNotIn("partial_answer_sha256", metadata)
+                self.assertFalse((output / "partial_result.txt").exists())
+                self.assertNotIn("private-auth", json.dumps(metadata))
+
+    def test_terminal_provider_errors_are_classified_without_retaining_error_text(self):
+        for terminal in ("blocking_limit", "rapid_refill_breaker", "prompt_too_long", "image_error",
+                         "model_error", "api_error", "malformed_tool_use_exhausted",
+                         "structured_output_retry_exhausted", "tool_deferred_unavailable", "turn_setup_failed"):
+            with self.subTest(terminal=terminal):
+                response = {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                            "result": "private-error-content", "terminal_reason": terminal,
+                            "errors": ["private-error-content"]}
+                output, metadata, exit_code = self.invoke_response_fixture(response)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(metadata["completion_reason"], "provider_error")
+                self.assertEqual(metadata["response_terminal_reason"], terminal)
+                self.assertTrue(metadata["response_received"])
+                self.assertFalse(metadata["partial_answer_available"])
+                self.assertFalse((output / "partial_result.txt").exists())
+                self.assertNotIn("private-error-content", json.dumps(metadata))
+
+    def test_success_shaped_error_and_permission_denial_are_not_completed(self):
+        base = {"type": "result", "subtype": "success", "is_error": False,
+                "result": "Text that must not become a final answer", "stop_reason": "end_turn"}
+        for key in ("errors", "permission_denials"):
+            for value in ([{"secret": "private-tool-input"}], "private-error-text", {}, None, False):
+                response = {**base, key: value}
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ValueError):
+                        helper.capture_response(response, 0)
+                    output, metadata, exit_code = self.invoke_response_fixture(response, returncode=0)
+                    self.assertEqual(exit_code, 1)
+                    self.assertEqual(metadata["completion_reason"], "provider_error")
+                    self.assertTrue(metadata["response_received"])
+                    self.assertFalse(metadata["model_review_completed"])
+                    self.assertFalse(metadata["partial_answer_available"])
+                    self.assertFalse((output / "result.txt").exists())
+                    self.assertFalse((output / "partial_result.txt").exists())
+                    self.assertNotIn("private-", json.dumps(metadata))
+        text, receipt = helper.capture_response({**base, "errors": [], "permission_denials": []}, 0)
+        self.assertTrue(receipt["model_review_completed"])
+        self.assertEqual(text, base["result"])
+
+    def test_provider_errors_override_stale_model_stops_without_preserving_diagnostics(self):
+        base = {"type": "result", "subtype": "success", "is_error": False,
+                "result": "private-diagnostic-result-never-save"}
+        contradictions = [
+            {"subtype": "error_during_execution", "is_error": True},
+            {"subtype": "error_max_structured_output_retries", "is_error": True},
+            {"is_error": True},
+            {"permission_denials": [{"tool_input": "private-input"}]},
+            {"errors": ["private-provider-error"]},
+            {"terminal_reason": "prompt_too_long"},
+            {"terminal_reason": "api_error"},
+        ]
+        for change in contradictions:
+            for stop in ("max_tokens", "pause_turn"):
+                with self.subTest(change=change, stop=stop):
+                    output, metadata, exit_code = self.invoke_response_fixture(
+                        {**base, "stop_reason": stop, **change})
+                    self.assertEqual(exit_code, 1)
+                    self.assertEqual(metadata["completion_reason"], "provider_error")
+                    self.assertTrue(metadata["response_received"])
+                    self.assertFalse(metadata["model_review_completed"])
+                    self.assertFalse(metadata["partial_answer_available"])
+                    self.assertFalse((output / "partial_result.txt").exists())
+                    self.assertFalse((output / "result.txt").exists())
+                    self.assertNotIn(b"private-", b"".join(path.read_bytes() for path in output.iterdir()))
+
+    def test_unrecognized_or_malformed_envelope_does_not_claim_response_delivery(self):
+        base = {"type": "result", "subtype": "success", "is_error": False, "result": "Fixture"}
+        fixtures = [b"private-malformed-json", [], {"type": "assistant", "text": "Fixture"},
+                    {key: value for key, value in base.items() if key != "result"},
+                    {**base, "subtype": "unknown_future_subtype"}, {**base, "subtype": []},
+                    {**base, "is_error": "false"}, {**base, "result": None},
+                    {**base, "stop_reason": {}}, {**base, "terminal_reason": []}]
+        for response in fixtures:
+            with self.subTest(response=response):
+                output, metadata, exit_code = self.invoke_response_fixture(response)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(metadata["status"], "delivery_unknown")
+                self.assertFalse(metadata["response_received"])
+                self.assertFalse(metadata["partial_answer_available"])
+                self.assertFalse((output / "partial_result.txt").exists())
+                self.assertFalse((output / "response.raw.json").exists())
+
+    def test_unknown_stop_reason_is_sanitized_and_does_not_preserve_untrusted_text(self):
+        response = {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "Unverified text", "stop_reason": "private-token-stop-reason",
+                    "terminal_reason": "private-token-terminal-reason"}
+        output, metadata, _ = self.invoke_response_fixture(response)
+        self.assertEqual(metadata["response_stop_reason"], "unknown")
+        self.assertEqual(metadata["response_terminal_reason"], "unknown")
+        self.assertEqual(metadata["completion_reason"], "unknown")
+        self.assertTrue(metadata["response_received"])
+        self.assertFalse(metadata["partial_answer_available"])
+        self.assertNotIn("private-token", json.dumps(metadata))
+
+    def test_partial_size_bound_uses_exact_utf8_bytes_without_truncation(self):
+        response = {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "π" * (helper.MAX_PARTIAL_ANSWER_BYTES // 2), "stop_reason": "max_tokens"}
+        output, metadata, _ = self.invoke_response_fixture(response)
+        self.assertEqual((output / "partial_result.txt").stat().st_size, helper.MAX_PARTIAL_ANSWER_BYTES)
+        self.assertTrue(metadata["partial_answer_available"])
+        for text in (response["result"] + "x", "\ud800", " \n"):
+            with self.subTest(size=len(text)):
+                output, metadata, _ = self.invoke_response_fixture({**response, "result": text})
+                self.assertFalse(metadata["partial_answer_available"])
+                self.assertFalse((output / "partial_result.txt").exists())
+
+    def test_timeout_does_not_parse_partial_or_success_shaped_stdout(self):
+        for response in ({"type": "result", "subtype": "success", "is_error": False,
+                          "result": "Fixture should not imply completion", "stop_reason": "end_turn"},
+                         {"type": "result", "subtype": "error_max_turns", "is_error": True,
+                          "result": "Fixture partial"}, b'{"type":"result","result":"truncated'):
+            with self.subTest(response=response):
+                output, metadata, exit_code = self.invoke_response_fixture(response, timed_out=True)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(metadata["status"], "timeout")
+                self.assertFalse(metadata["response_received"])
+                self.assertFalse(metadata["partial_answer_available"])
+                self.assertFalse((output / "partial_result.txt").exists())
+                self.assertFalse((output / "result.txt").exists())
+
+    def test_child_failure_without_response_keeps_delivery_unknown(self):
+        packet = self.root / "exception-packet.txt"
+        packet.write_text("Synthetic fixture only", encoding="utf-8")
+        output = self.root / "exception-output"
+        argv = ["helper", "--config", str(self.config_file), "--prompt-file", str(packet),
+                "--output-dir", str(output), "--model", "opus", "--effort", "max"]
+        with patch.object(sys, "argv", argv), \
+                patch.object(helper, "discover_in_workspace", return_value=self.catalog()), \
+                patch.object(helper, "run_child", side_effect=OSError("private-child-error")) as child, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 1)
+        self.assertEqual(child.call_count, 1)
+        metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["status"], "delivery_unknown")
+        self.assertFalse(metadata["response_received"])
+        self.assertNotIn("private-child-error", json.dumps(metadata))
+
+    def test_artifact_write_failure_keeps_received_receipt_without_claiming_partial_file(self):
+        write_bytes = Path.write_bytes
+
+        def fail_partial(path, data):
+            if path.name == "partial_result.txt":
+                raise OSError("private-filesystem-error")
+            return write_bytes(path, data)
+
+        response = {"type": "result", "subtype": "error_max_turns", "is_error": True,
+                    "result": "Fixture partial"}
+        with patch.object(Path, "write_bytes", fail_partial):
+            output, metadata, exit_code = self.invoke_response_fixture(response)
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(metadata["response_received"])
+        self.assertEqual(metadata["status"], "response_received_incomplete")
+        self.assertFalse(metadata["partial_answer_available"])
+        self.assertNotIn("partial_answer_sha256", metadata)
+        self.assertFalse((output / "partial_result.txt").exists())
+        self.assertNotIn("private-filesystem-error", json.dumps(metadata))
+
     def test_review_requires_explicit_choices(self):
         with patch.object(sys, "argv", ["helper", "--prompt-file", "packet", "--output-dir", "out"]):
             with self.assertRaises(SystemExit) as caught:

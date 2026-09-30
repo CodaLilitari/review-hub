@@ -14,7 +14,19 @@ import sys
 import time
 
 from .core import Hub, ACTIVE, RETIRED, atomic_json, digest, encoded, now
-from .attachments import verify_files, manifest_digest, NATIVE_IMAGE_TYPES
+from .attachments import verify_files, manifest_digest, NATIVE_IMAGE_TYPES, no_links, check_open_path
+
+
+def answer_bytes(path: Path, root: Path) -> bytes:
+    """Read a bounded regular answer without following linked evidence paths."""
+    no_links(path, root)
+    with path.open("rb") as stream:
+        check_open_path(stream, path)
+        content = stream.read(1048577)
+    no_links(path, root)
+    if len(content) > 1048576:
+        raise ValueError("Provider answer exceeds the 1 MiB review bound")
+    return content
 
 
 def contain_worker():
@@ -176,10 +188,24 @@ def run_job(hub: Hub, job_id: str):
         attempted = next((value for value in delivery_fields if type(value) is bool), None)
         claims_completion = (metadata.get("status") == "completed"
                              and metadata.get("model_review_completed") is True)
+        response_received = metadata.get("response_received")
+        completion_reason = metadata.get("completion_reason")
+        known_reasons = {"tool_limit", "output_limit", "budget_limit", "incomplete", "provider_error", "unknown", "completed"}
+        partial_flag = metadata.get("partial_answer_available", False)
+        incomplete_claim = metadata.get("status") == "response_received_incomplete"
         delivery_contradiction = (any(type(value) is not bool for value in delivery_fields)
                                   or (True in delivery_fields and False in delivery_fields)
-                                  or (claims_completion and False in delivery_fields))
-        contradiction = delivery_contradiction or any(metadata.get(key) not in allowed for key, allowed in {
+                                  or (claims_completion and False in delivery_fields)
+                                  or (response_received is not None and type(response_received) is not bool)
+                                  or (response_received is True and False in delivery_fields)
+                                  or (claims_completion and response_received is False))
+        new_field_conflict = (type(partial_flag) is not bool
+                              or (completion_reason is not None and
+                                  (not isinstance(completion_reason, str) or completion_reason not in known_reasons))
+                              or (claims_completion and (partial_flag is True or completion_reason not in (None, "completed")))
+                              or (incomplete_claim and (completion_reason == "completed"
+                                  or metadata.get("model_review_completed") is not False)))
+        contradiction = delivery_contradiction or new_field_conflict or any(metadata.get(key) not in allowed for key, allowed in {
             "response_stop_reason": (None, "end_turn", "stop_sequence"),
             "response_finish_reason": (None, "stop", "end_turn", "stop_sequence"),
             "response_terminal_reason": (None, "completed", "success", "end_turn", "stop_sequence"),
@@ -195,8 +221,32 @@ def run_job(hub: Hub, job_id: str):
             contradiction = True
         successful = (not stop and not contradiction and process.returncode == 0 and metadata.get("status") == "completed"
                       and metadata.get("model_review_completed") is True)
+        incomplete_response = (incomplete_claim
+                               and response_received is True
+                               and metadata.get("model_review_completed") is False
+                               and not new_field_conflict and not delivery_contradiction)
         result_path = output / "result.txt"
-        answer = result_path.read_text(encoding="utf-8") if result_path.is_file() else ""
+        answer = answer_bytes(result_path, directory).decode("utf-8") if successful and result_path.is_file() else ""
+        partial_answer = False
+        partial_integrity_error = False
+        if incomplete_response and not stop:
+            # Only an explicitly classified, hash-bound partial may be exposed.
+            # Never relabel a failure log or a stray result.txt as review text.
+            answer = ""
+            if partial_flag is True:
+                partial_path = output / "partial_result.txt"
+                try:
+                    if native_input and not native_receipt_matches:
+                        raise ValueError("Native partial input receipt mismatch")
+                    partial_bytes = answer_bytes(partial_path, directory)
+                    if (not 0 < len(partial_bytes) <= 1048576
+                            or digest(partial_bytes) != metadata.get("partial_answer_sha256")):
+                        raise ValueError("Partial response receipt mismatch")
+                    answer = partial_bytes.decode("utf-8")
+                    partial_answer = bool(answer.strip())
+                except (OSError, ValueError, UnicodeError):
+                    partial_integrity_error = True
+                    answer = ""
         if successful and not answer.strip():
             successful = False
         if successful:
@@ -205,12 +255,17 @@ def run_job(hub: Hub, job_id: str):
             state, submission = "delivery_unknown", "conflicting_helper_submission_receipt"
         elif attempted is False:
             state, submission = "blocked", "not_sent_by_helper"
-        elif not stop and (contradiction or metadata.get("status") in {"review_failed", "response_received_unverified"}):
+        elif not stop and incomplete_response:
+            state, submission = "failed", "response_received_incomplete"
+        elif (not stop and response_received is not False
+              and (response_received is True or (response_received is None and metadata.get("status") in
+                   {"completed", "review_failed", "response_received_unverified"}))
+              and (contradiction or metadata.get("status") in {"review_failed", "response_received_unverified"})):
             state, submission = "failed", "response_received_not_successful"
         else:
             state, submission = "delivery_unknown", "attempt_or_completion_uncertain"
-        # Only the final answer is available via MCP. Raw evidence remains
-        # private on disk and is never included in normal tool responses.
+        # Only answer text (explicitly marked when partial) is exposed via MCP.
+        # Raw error/diagnostic evidence is never a normal tool response.
         if answer:
             (directory / "answer.txt").write_bytes(answer.encode("utf-8"))
         models = model_labels(metadata.get("verified_response_models", []))
@@ -224,6 +279,13 @@ def run_job(hub: Hub, job_id: str):
             model_evidence = ""
         with hub.connect() as c:
             row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not isinstance(completion_reason, str) or completion_reason not in known_reasons:
+                completion_reason = None
+            termination = {key: value for key in ("response_subtype", "response_stop_reason", "response_terminal_reason")
+                           if isinstance(value := metadata.get(key), str) and len(value) <= 128
+                           and value and all(char.isascii() and (char.isalpha() or char == "_") for char in value)}
+            if type(metadata.get("response_is_error")) is bool:
+                termination["response_is_error"] = metadata["response_is_error"]
             hub._update(c, row, state=state, submission=submission, finished_at=now(),
                         helper_exit_code=process.returncode, helper_status=metadata.get("status", "missing_receipt"),
                         verified_response_models=models, local_stop_reason=stop,
@@ -232,7 +294,14 @@ def run_job(hub: Hub, job_id: str):
                         contradictory_submission_fields=delivery_contradiction,
                         native_input_receipt_matched=native_receipt_matches if native_input else None,
                         provider_session_id=metadata.get("session_id"),
-                        error=None if successful else "Inspect the local helper receipt before retrying; no automatic retry was made",
+                        error=(None if successful else
+                               "Partial response did not match its receipt; inspect local evidence; no automatic retry was made" if partial_integrity_error else
+                               "Review is incomplete; inspect the retained response and limit reason. CLI session resume is unavailable; no automatic retry was made" if incomplete_response else
+                               "Inspect the local helper receipt before retrying; no automatic retry was made"),
+                        response_received=response_received if type(response_received) is bool else None,
+                        completion_reason=completion_reason, response_termination=termination,
+                        partial_answer_available=partial_answer,
+                        partial_answer_integrity_error=partial_integrity_error,
                         answer_available=bool(answer.strip()),
                         answer_sha256=digest(answer.encode('utf-8')) if answer else None,
                         attachment_delivery=(("native_content_response_received" if native_input else "embedded_text_response_received")

@@ -498,7 +498,9 @@ class Hub:
             selected_turn = data.get("completion_turn_id", "")
         else:
             file = Path(data["evidence_directory"]) / "answer.txt"
-            answer = file.read_bytes().decode("utf-8") if file.is_file() else ""
+            # Worker-retained partials have the same integrity requirement as
+            # final answers; a later read must not silently accept edited bytes.
+            answer, _ = self._answer_snapshot(data) if data.get("answer_available") or file.is_file() or file.is_symlink() else ("", "")
             selected_turn = data.get("completion_turn_id", "")
         return {"job": data, "answer": answer[offset:offset + limit], "offset": offset,
                 "turn_id": selected_turn,

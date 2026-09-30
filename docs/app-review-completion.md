@@ -2,6 +2,8 @@
 
 An app can display a verdict and a generic “finished” notice while the requested review remains incomplete. A tool-limit/Continue notice or explicitly unfinished checks takes precedence. Completing the requested audit is also different from approving the artifact: a completed review may still require repairs.
 
+The classifier recognizes explicit tool-call and turn-budget exhaustion as well as tool-use-limit wording. Structured `pause_turn`, `tool_use`, and `refusal` prevent completion without all being labeled tool exhaustion. See [Claude limit handling](claude-limit-handling.md) for the distinct CLI/app behavior and recovery rules.
+
 `record_handoff_result` records individual response turns. Supply the exact response, current UI evidence, and a `completion_observation` object. Prefer an actual structured provider stop reason when available; do not infer one from an answer's wording. The Hub records the coordinator's observations and does not inspect the app itself.
 
 ```json

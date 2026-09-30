@@ -79,6 +79,45 @@ class HandoffContinuationTests(unittest.TestCase):
         self.assertNotIn('answer_sha256', recorded)
         finalize.assert_not_called()
 
+    def test_claude_tool_call_notice_blocks_findings_then_allows_same_conversation_finish(self):
+        # Reproduced failure: ordinary "tool call" wording was not recognized;
+        # reported completion finalized the job and made continuation impossible.
+        for provider in ('claude-desktop', 'claude-cowork'):
+            with self.subTest(provider=provider):
+                test_core.seed_models(self.hub)
+                job = self.hub.handoff(self.project, provider, 'Review this synthetic audit only.', self.ref)['job']
+                original = 'Tool call limit reached. Please click Continue so I can finish the audit.\r\n'
+                with patch.object(self.hub, '_finalize_handoff', wraps=self.hub._finalize_handoff) as finalize:
+                    partial = self.record(job, original, completion_observation=self.observation(
+                        'completed', provider_stop_reason='end_turn'),
+                        evidence='Synthetic app UI shows tool call limit reached with Continue available.')
+                    self.assertEqual(partial['state'], 'needs_continuation')
+                    self.assertEqual(partial['completion']['status'], 'tool_limit')
+                    self.assertFalse(partial['completion_eligible'])
+                    self.assertEqual(partial['acknowledgment'], 'pending')
+                    self.assertNotIn('finished_at', partial)
+                    self.assertFalse((Path(job['evidence_directory']) / 'answer.txt').exists())
+                    with self.assertRaisesRegex(ValueError, 'actually returned'):
+                        self.hub.record_review(self.project, job['id'], self.envelope(),
+                                               'Synthetic normalization audit only.')
+                    with self.assertRaisesRegex(ValueError, 'cannot enter comparison'):
+                        self.hub.comparison_report(self.project, [job['id']])
+                    finalize.assert_not_called()
+                    turn = partial['handoff_turns'][-1]
+                    final_text = 'The remaining source checks are now complete. Synthetic final review.'
+                    completed = self.record(job, final_text, previous_turn_id=turn['turn_id'],
+                                            completion_observation=self.observation('completed'),
+                                            acknowledgment='delivered')
+                    self.assertEqual(completed['state'], 'returned_via_handoff')
+                    self.assertEqual(self.hub.result(self.project, job['id'])['answer'], final_text)
+                    self.assertEqual(self.turn_path(partial, turn).read_bytes(), original.encode('utf-8'))
+                    self.assertEqual(completed['handoff_turns'][-1]['previous_answer_sha256'], turn['answer_sha256'])
+                    review = self.hub.record_review(self.project, job['id'], self.envelope(),
+                                                   'Synthetic completed normalization audit only.')
+                    self.assertEqual(review['summary'], self.envelope()['summary'])
+                    finalize.assert_called_once()
+        self.fixture.launch.assert_not_called()
+
     def test_interruption_categories_remain_distinct_and_never_finalize(self):
         for status in ('tool_limit', 'output_limit', 'cancelled', 'provider_error',
                        'delivery_unknown', 'incomplete', 'unknown'):

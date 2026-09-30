@@ -304,15 +304,19 @@ class ProviderMigrationTests(unittest.TestCase):
                 job = self.fixture.execute(batch)[0]
                 self.assertEqual(job["helper_exit_code"], 0)
                 self.assertEqual(job["helper_status"], "completed")
-                self.assertTrue(job["answer_available"])
+                self.assertFalse(job["answer_available"])
                 self.assertTrue(job["contradictory_submission_fields"])
                 self.assertTrue(job["contradictory_completion_fields"])
                 self.assertEqual(job["state"], "delivery_unknown")
                 self.assertEqual(job["submission"], "conflicting_helper_submission_receipt")
                 result = self.hub.result(self.project, job["id"])
-                self.assertIn("synthetic only", result["answer"])
+                self.assertEqual(result["answer"], "")
                 self.assertNotIn("PRIVATE_TEST_REASONING", json.dumps(result))
                 directory = Path(job["evidence_directory"])
+                # Contradictory output remains available for private inspection,
+                # but is not relabeled as an ordinary answer or verified partial.
+                self.assertIn("synthetic only", (directory / "provider" / "result.txt").read_text(encoding="utf-8"))
+                self.assertFalse((directory / "answer.txt").exists())
                 self.assertTrue((directory / "started.json").is_file())
                 replay = self.fixture.submit(prompt=prompt, key=label)
                 self.assertTrue(replay["reused"])

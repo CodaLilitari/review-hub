@@ -261,6 +261,45 @@ class NativeAttachmentTests(unittest.TestCase):
         self.assertFalse(finished["contradictory_completion_fields"])
         self.assertFalse((Path(finished["evidence_directory"]) / "provider").exists())
 
+    def test_native_partial_requires_matching_input_receipt_before_answer_exposure(self):
+        partial_text = "Synthetic image detail checked.\r\nOne image check remains open."
+        partial_helper = NATIVE_HELPER.replace(
+            '    (output / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")',
+            r'''
+    partial = b"Synthetic image detail checked.\r\nOne image check remains open."
+    (output / "partial_result.txt").write_bytes(partial)
+    metadata.update(status="response_received_incomplete", model_review_completed=False,
+        response_received=True, completion_reason="tool_limit",
+        response_subtype="error_max_turns", response_terminal_reason="max_turns", response_is_error=True,
+        partial_answer_available=True, partial_answer_sha256=hashlib.sha256(partial).hexdigest())
+    code = 1
+    (output / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+''')
+        self.fixture.fake.write_bytes(partial_helper.encode("utf-8"))
+        for pin in self.fixture.pins.values():
+            pin["sha256"] = test_core.core.digest(self.fixture.fake.read_bytes())
+        self.fixture.write_pins()
+        for field in (None, "request_sha256", "input_format", "input_transport", "input_image_sha256s"):
+            with self.subTest(receipt_field=field):
+                self.fixture.observe()
+                prompt = "Synthetic image partial." + (f" MODE:MISMATCH:{field}" if field else "")
+                batch = self.submit([self.picture], key=f"native-partial-{field}", prompt=prompt)
+                job = self.fixture.execute(batch)[0]
+                result = self.hub.result(str(self.project), job["id"])
+                self.assertEqual(job["state"], "failed")
+                self.assertEqual(job["submission"], "response_received_incomplete")
+                self.assertTrue(job["response_received"])
+                self.assertFalse(job["provider_resume"])
+                self.assertIs(job["native_input_receipt_matched"], field is None)
+                self.assertIs(job["partial_answer_integrity_error"], field is not None)
+                self.assertIs(job["partial_answer_available"], field is None)
+                self.assertEqual(result["answer"], partial_text if field is None else "")
+                if field is None:
+                    self.assertEqual(job["answer_sha256"], test_core.core.digest(partial_text.encode("utf-8")))
+                else:
+                    self.assertFalse(job["answer_available"])
+                    self.assertFalse((Path(job["evidence_directory"]) / "answer.txt").exists())
+
     def test_native_receipt_binds_image_order_not_just_hash_membership(self):
         gif_bytes = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
         gif = self.project / "second.gif"

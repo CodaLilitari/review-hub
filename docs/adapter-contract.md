@@ -73,6 +73,12 @@ Normalize provider-specific fields deliberately; never discard a failure to manu
 
 A native Claude image request also requires receipt fields `input_format: "stream-json"`, `input_transport: "claude_content_blocks"`, `request_sha256` matching the transmitted packet, and `input_image_sha256s` matching the ordered image hashes. A mismatched receipt cannot establish successful completion. Missing receipt evidence does not imply that a response arrived. These fields bind a helper's reported response to the supplied request; they do not prove pixel interpretation, model correctness, or independent provider attestation.
 
+## Incomplete Claude results
+
+The Claude helper distinguishes a validated terminal result from malformed output or a timeout. It records recognized unsuccessful envelopes as `status: "response_received_incomplete"`, `response_received: true`, and `model_review_completed: false`, with a controlled `completion_reason` and sanitized response fields. When that result includes bounded partial review text, `partial_result.txt` and `partial_answer_sha256` preserve it exactly; `partial_answer_available` must be a boolean. Never place raw failure diagnostics in `result.txt`. The worker verifies partial bytes and keeps the job unsuccessful. Contradictory completion/delivery fields cannot establish success or upgrade unknown delivery. See [Claude limit handling](claude-limit-handling.md) for categories, recovery, and validation limits.
+
+Review helper changes before refreshing the source checksum in ignored local configuration. These fields do not change provider app versions, tool grants, billing controls, or automatic retry policy.
+
 ## Official routes and future ACP
 
 The [Claude Code CLI](https://code.claude.com/docs/en/cli-reference) supports headless output and tool restrictions. Its [authentication terms](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) distinguish a user's own login to an unmodified binary from third-party credential intermediation. `--bare` skips subscription OAuth; do not use it as an isolation shortcut for this route.

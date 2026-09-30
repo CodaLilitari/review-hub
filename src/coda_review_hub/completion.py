@@ -24,6 +24,11 @@ INTERRUPTIONS = frozenset({
 STOP_REASONS = {
     "tool_budget": "tool_limit", "max_tools": "tool_limit", "tool_use_limit": "tool_limit",
     "tool_limit": "tool_limit", "tool_budget_exhausted": "tool_limit",
+    "tool_call_limit": "tool_limit", "max_tool_calls": "tool_limit",
+    "max_turns": "tool_limit", "error_max_turns": "tool_limit",
+    # These end or pause a provider turn without establishing that the review
+    # finished. Refusal is not evidence of tool-budget exhaustion.
+    "pause_turn": "incomplete", "tool_use": "incomplete", "refusal": "incomplete",
     "max_tokens": "output_limit", "length": "output_limit", "output_limit": "output_limit",
     "cancelled": "cancelled", "canceled": "cancelled",
     "error": "provider_error", "provider_error": "provider_error",
@@ -45,6 +50,17 @@ TEXT_CUES = {
     ),
     "incomplete": (
         "checks remain unfinished", "checks remain open", "not completed", "not re-verified this pass",
+    ),
+}
+TEXT_PATTERNS = {
+    "tool_limit": (
+        # Only explicit exhaustion/reached notices: discussion of tool budgets,
+        # a configured --max-turns value, or a currency budget is not a cue.
+        r"(?:tool(?:[ -](?:call|use))?|turn)[ -](?:limit|budget) (?:has been |was )?(?:reached|exceeded|exhausted)",
+        r"(?:hit|reached|exceeded) (?:the |my |its |our |your )?(?:tool(?:[ -](?:call|use))?|turn)[ -](?:limit|budget)",
+        r"(?:hit|reached|exceeded) (?:the |my |its |our |your )?maximum (?:allowed )?(?:number of )?(?:[0-9]+ )?(?:tool(?:[ -](?:call|use))?s|turns)",
+        r"(?:ran|run) out of (?:tool[ -](?:calls|uses)|turns)",
+        r"exhausted (?:the |my |its |our |your )?(?:tool(?:[ -](?:call|use))? (?:budget|limit)|tool[ -](?:calls|uses)|turn (?:budget|limit))",
     ),
 }
 BASIS = (
@@ -137,7 +153,10 @@ def classify_completion(response: str, evidence: str, observation: dict | None,
     for source, value in (("response", response), ("evidence", evidence)):
         normalized = _cue_text(value)
         for status, phrases in TEXT_CUES.items():
-            if any(re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", normalized) for phrase in phrases):
+            phrases_match = any(re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", normalized) for phrase in phrases)
+            patterns_match = any(re.search(r"(?<!\w)(?:" + pattern + r")(?!\w)", normalized)
+                                 for pattern in TEXT_PATTERNS.get(status, ()))
+            if phrases_match or patterns_match:
                 text_interruptions.add(status)
                 signals.append(source + "_cue:" + status)
     if continued:
@@ -156,7 +175,7 @@ def classify_completion(response: str, evidence: str, observation: dict | None,
     elif text_interruptions:
         classified = ("tool_limit" if "tool_limit" in text_interruptions else
                       "output_limit" if "output_limit" in text_interruptions else "incomplete")
-    elif reported == "incomplete" or continued or merged:
+    elif reason_status == "incomplete" or reported == "incomplete" or continued or merged:
         classified = "incomplete"
     elif raw_reason and reason_status is None:
         classified = "unknown"
