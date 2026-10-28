@@ -1,6 +1,8 @@
 # Native files and route selection
 
-Select a route based on the input needed for the task. Prefer the original file when its layout, imagery, formatting, or other native content matters. Do not silently replace an image with a description, turn a PDF into extracted text, or omit unsupported files. Any deliberate conversion must preserve the original, record the conversion and its limits, and be suitable for the task.
+Select a route based on the input needed for the task, for every authorized reviewer. Prefer the original file when its layout, imagery, sound, motion, timing, formatting or other native content matters. Images and bounded audio/video excerpts are review inputs when relevant and supported. A text-only helper or prompt-only message tool limits that transport; use a capable, authorized app upload when the critique requires media. Do not silently replace an image with a description, audio with a transcript, video with stills, a PDF with extracted text, or omit unsupported files. Any deliberate conversion must preserve the original, record the conversion and its limits, and be suitable for the task.
+
+For excerpts, retain the source hash and start/end times; for conversions, record changes to format, resolution, frame rate or audio tracks when applicable. Include enough context for the requested judgment. The reviewer should identify inaccessible inputs and uninspected intervals. A transcript can support wording review and stills can support composition review; neither establishes listening, motion review or audiovisual synchronization. Delivery and perceptual judgment remain separate evidence.
 
 | Route | Implemented input | Output and audit |
 |---|---|---|

@@ -163,6 +163,49 @@ class ModelDispatchTests(unittest.TestCase):
             self.hub.record_models("claude-code", [{"id": "invented", "efforts": ["max"]}],
                                    "Synthetic false attestation.", datetime.now(timezone.utc).isoformat())
 
+    def test_conditional_fallback_is_retained_with_handoff_after_selection_changes(self):
+        observation = {"primary_model": "gpt-6", "primary_effort": "pro",
+                       "target_model": "gpt-6", "target_effort": "pro", "workspace": "Personal",
+                       "scope": "exact_control", "state": "disabled", "enabled": False, "selected": False,
+                       "observed_at": datetime.now(timezone.utc).isoformat(),
+                       "evidence": "Synthetic exact primary control disabled; not generic menu text."}
+        catalog = self.hub.record_models("chatgpt", [{"id": "gpt-5.6", "efforts": ["pro"]}],
+            "Synthetic fallback remains selectable in Personal.", observation["observed_at"],
+            selection_policy={"primary_model": "gpt-6", "primary_effort": "pro",
+                              "fallback_model": "gpt-5.6", "fallback_effort": "pro", "workspace": "Personal"})
+        self.hub.select_model("chatgpt", "gpt-5.6", "pro", catalog["catalog"]["fingerprint"],
+                              "User preauthorized this conditional fallback.",
+                              selection_basis="conditional_fallback", fallback_observation=observation)
+        job = self.hub.handoff(str(self.project), "chatgpt", "Synthetic bounded review.")["job"]
+        self.assertEqual(job["fallback_observation"], observation)
+        catalog = self.hub.record_models("chatgpt", [{"id": "gpt-6", "efforts": ["pro"]}],
+            "Synthetic primary is now selectable again.", datetime.now(timezone.utc).isoformat())
+        self.hub.select_model("chatgpt", "gpt-6", "pro", catalog["catalog"]["fingerprint"],
+                              "Return to the user's primary model preference.")
+        self.assertEqual(self.hub.jobs(str(self.project))[0]["fallback_observation"], observation)
+
+    def test_cli_select_model_accepts_structured_fallback(self):
+        payload = {"provider": "chatgpt", "model": "gpt-5.6", "effort": "pro",
+                   "catalog_fingerprint": "fixture", "evidence": "Synthetic user fallback policy.",
+                   "fallback_observation": {"scope": "menu"}}
+        path = self.project / "fallback-choice.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with patch.object(cli, "Hub", return_value=self.hub), patch.object(self.hub, "select_model", return_value={}) as selected:
+            with redirect_stdout(io.StringIO()):
+                cli.main(["select-model", str(path)])
+        selected.assert_called_once_with(**payload)
+
+    def test_policy_activation_does_not_block_recording_existing_handoff_result(self):
+        job = self.hub.handoff(str(self.project), "claude-desktop", "Synthetic already-delivered app review.")["job"]
+        self.hub.record_models("claude-desktop", [{"id": "fixture-app", "efforts": ["default"]}],
+            "User establishes a new standing primary policy after that delivery.", datetime.now(timezone.utc).isoformat(),
+            selection_policy={"primary_model": "new-primary", "primary_effort": "default",
+                              "fallback_model": "fixture-app", "fallback_effort": "default", "workspace": "Fixture"})
+        result = self.hub.record_handoff_result(str(self.project), job["id"], "Synthetic preserved completed response.",
+            "Synthetic observed response in the saved conversation after policy activation.", "fixture-saved-conversation",
+            observed_model="fixture-app", observed_mode="default", completion_observation={"status": "completed"})
+        self.assertEqual(result["job"]["state"], "returned_via_handoff")
+
     def test_helper_pin_no_longer_selects_model_or_effort(self):
         self.pins["claude-code"].pop("model")
         self.pins["claude-code"].pop("effort")

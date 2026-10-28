@@ -65,11 +65,23 @@ def load_config(path: Path | None = None) -> dict:
 
 def safe_env(profile: Path | None = None) -> dict[str, str]:
     """Build the sanitized environment, including the worker's no-argument route."""
+    provider_child = profile is not None
     if profile is None:
         profile = load_config()["profile"]
     env = {key: value for key, value in os.environ.items() if key.upper() in ENV_ALLOWLIST}
     env["PATH"] = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32")
     env["GROK_HOME"] = str(profile)
+    # Current Grok can discover synchronized Claude skills through the generic
+    # user home even when compatibility switches are disabled. Keep the existing
+    # dedicated Grok auth/config profile, but route generic-home discovery there
+    # as well. inspect_startup still rejects every non-bundled skill; no allowlist
+    # is widened and no user customization or credential file is moved.
+    # The no-argument call launches Python's checker, whose DEFAULT_CONFIG must
+    # still resolve in the original user home. Every actual provider launch
+    # supplies an explicit profile below and receives the isolated generic home.
+    if provider_child:
+        env["HOME"] = str(profile)
+        env["USERPROFILE"] = str(profile)
     env["NO_COLOR"] = "1"
     for vendor in ("CLAUDE", "CURSOR"):
         for surface in ("SKILLS", "RULES", "AGENTS", "MCPS", "HOOKS", "SESSIONS"):
@@ -201,7 +213,7 @@ def inspect_startup(data: object, profile: Path) -> dict:
         "marketplace": {"default_skills_installs_purged", "official_marketplace_auto_installed", "sources"},
         "models": {"default", "default_reasoning_effort"},
         "ui": {"max_thoughts_width", "fork_secondary_model", "yolo", "compact_mode"},
-        "cli": {"auto_update"},
+        "cli": {"auto_update", "installer"},
     }
     config_key_groups = []
     for layer in layers:
@@ -213,6 +225,11 @@ def inspect_startup(data: object, profile: Path) -> dict:
         # Configuration is not auth.json. Inspect only this validated path and
         # discard values; BYOK, routing, commands and hooks are not allowed.
         config = tomllib.loads(Path(layer["path"]).read_text(encoding="utf-8"))
+        # Official 1.0.52 updater records this marker. It is not an arbitrary
+        # executable or a new authentication/provider route.
+        cli_config = config.get("cli", {})
+        if isinstance(cli_config, dict) and "installer" in cli_config and cli_config["installer"] != "internal":
+            failures.append("unexpected_installer_marker")
         if not set(config).issubset(allowed_config):
             failures.append("unexpected_config_key_group")
         for group, values in config.items():
@@ -415,7 +432,7 @@ def _discover(config: dict, cwd: Path, env: dict) -> dict:
     if version["returncode"] or version["timed_out"]:
         raise RuntimeError("Grok version query failed")
     runtime_version = version["stdout"].decode("utf-8", errors="replace").strip()
-    if not re.fullmatch(r"grok(?: build)?\s+v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?(?:\s+\([0-9a-fA-F]{7,64}\))?", runtime_version):
+    if not re.fullmatch(r"grok(?: build)?\s+v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?(?:\s+\([0-9a-fA-F]{7,64}\))?(?: \[(?:stable|alpha)\])?", runtime_version):
         raise RuntimeError("Invalid Grok runtime version")
     inspection = run_child([str(exe), *restriction_args(), "inspect", "--json"], cwd, env, 45)
     if inspection["returncode"] or inspection["timed_out"]:

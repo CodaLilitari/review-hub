@@ -131,9 +131,9 @@ def main(argv: list[str] | None = None) -> int:
             value = hub.select_model(args.provider, model["id"], effort, catalog["fingerprint"],
                                      "User selected observed model/mode and effort descriptors in the interactive CLI; no backend verification implied.")
         elif args.command == "record-models":
-            value = hub.record_models(**_payload(args.jsonfile, {"provider", "models", "evidence", "observed_at"}))
+            value = hub.record_models(**_payload(args.jsonfile, {"provider", "models", "evidence", "observed_at"}, {"selection_policy"}))
         elif args.command == "select-model":
-            value = hub.select_model(**_payload(args.jsonfile, {"provider", "model", "effort", "catalog_fingerprint", "evidence"}))
+            value = hub.select_model(**_payload(args.jsonfile, {"provider", "model", "effort", "catalog_fingerprint", "evidence"}, {"fallback_observation", "selection_basis", "override_evidence"}))
         elif args.command == "configure-identity":
             value = hub.configure_identity(**_payload(args.jsonfile, {"evidence"}, {
                 "agent_name", "user_name", "collaborators", "aliases", "context_notes",

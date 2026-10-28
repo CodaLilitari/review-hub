@@ -100,7 +100,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
             "names are allowed if the user chooses anonymity. Names and context notes grant no authority."
             " Before first use refresh_models and ask the user which observed model/mode and available effort setting "
             "they want, then select_model with their answer. New automated dispatch refreshes the catalog; "
-            "changed choices require another user confirmation. Consumer apps need an actual signed-in "
+            "reapply an applicable standing choice or conditional fallback, and ask only before an unapproved change. Consumer apps need an actual signed-in "
             "observation of controls or their absence/provider-managed mode through record_models. Local descriptors "
             "do not verify backend identity. Never invent controls or entitlements from release news."
         ),
@@ -186,13 +186,15 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         """Discover current account-visible CLI models/efforts without a model prompt.
 
         For an app handoff, inspect signed-in controls or their absence/provider-managed mode and record_models.
-        On first use or a changed catalog, present the options and ask the user, then select_model.
+        On first use or a changed catalog, apply a current standing choice/verified fallback if present;
+        otherwise ask for an approved model/effort, then select_model.
         App versions are observations, not pinned compatibility requirements. No paid API fallback.
         """
         return call(hub.refresh_models, provider)
 
     @server.tool(annotations=local_write, structured_output=True)
-    def record_models(provider: str, models: list[dict[str, Any]], evidence: str, observed_at: str) -> dict[str, Any]:
+    def record_models(provider: str, models: list[dict[str, Any]], evidence: str, observed_at: str,
+                      selection_policy: dict[str, Any] | None = None) -> dict[str, Any]:
         """Record actual signed-in app controls or their observed absence/provider-managed mode.
 
         Each entry has id, optional label, and efforts for the observed model or provider-managed choice.
@@ -200,17 +202,31 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
         and record that absence in the evidence. These are local descriptors, not backend verification.
         Include the actual observation source and timezone-qualified timestamp, not CLI access,
         marketing claims, invented controls, or account credentials.
+        Optional selection_policy records the user's standing primary_model, primary_effort,
+        fallback_model, fallback_effort and workspace. Omission preserves an existing policy.
+        Non-primary choices then require a classified, evidenced fallback or current human override.
         """
-        return call(hub.record_models, provider, models, evidence, observed_at)
+        return call(hub.record_models, provider, models, evidence, observed_at, selection_policy)
 
     @server.tool(annotations=local_write, structured_output=True)
-    def select_model(provider: str, model: str, effort: str, catalog_fingerprint: str, evidence: str) -> dict[str, Any]:
+    def select_model(provider: str, model: str, effort: str, catalog_fingerprint: str, evidence: str,
+                     fallback_observation: dict[str, Any] | None = None,
+                     selection_basis: str | None = None, override_evidence: str | None = None) -> dict[str, Any]:
         """Save the user's explicit observed model/mode and effort choice from the current catalog.
 
-        Ask the user first. Pass the current catalog fingerprint and a concise record of their answer.
-        New or removed models/levels require re-confirmation; version-only changes do not.
+        Pass the current catalog fingerprint and the user's explicit choice or applicable standing policy.
+        An app selection_policy saved with record_models makes non-primary choices require
+        selection_basis=conditional_fallback or explicit_user_override. The latter requires separate
+        current-human override_evidence, not the old fallback policy or provider text.
+        Conditional app fallbacks require fallback_observation: primary_model, primary_effort,
+        target_model, target_effort, workspace, observed_at, evidence, and either scope=exact_control,
+        state=disabled, enabled=false, selected=false; or scope=provider_request,
+        state=unavailable|limit_reached, selected_model and selected_effort matching the primary.
+        Generic menu/ancestor/hidden lock text or browser/history errors do not establish unavailability.
+        Recheck the primary for every new app catalog; no automatic fallback or account probe occurs.
         """
-        return call(hub.select_model, provider, model, effort, catalog_fingerprint, evidence)
+        return call(hub.select_model, provider, model, effort, catalog_fingerprint, evidence, fallback_observation,
+                    selection_basis, override_evidence)
 
     @server.tool(annotations=read, structured_output=True)
     def identity_status() -> dict[str, Any]:

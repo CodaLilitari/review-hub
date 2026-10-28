@@ -21,7 +21,7 @@ import uuid
 from .attachments import (read_files, automated_packet, stage_files, verify_files, manifest_digest,
                           NATIVE_IMAGE_TYPES, MAX_NATIVE_PACKET_BYTES)
 from . import __version__
-from .identity import IdentityStore
+from .identity import IdentityStore, PROVIDERS
 from .models import ModelStore, discover
 from .reviews import normalize_review, check_anchors, default_lineage, text as bounded_text
 from .capabilities import handoff_route_metadata
@@ -38,17 +38,25 @@ RETIRED = {
 }
 HANDOFF = {
     "claude-desktop": "Use the signed-in Claude Desktop Chat surface and inspect its current model and thinking picker. Cowork is a separate folder-scoped route.",
-    "chatgpt": "Check the user's established ChatGPT collaborator and use a conversation dedicated to this project; verify the selected model in the actual app.",
+    "chatgpt": "Check the user's established ChatGPT collaborator and use a saved conversation dedicated to this project. Verify the actual selected model, effort/Pro control and intended workspace. A conditional fallback requires exact disabled-primary control evidence or an explicit provider error on an actual request with that primary model/effort selected; generic menu/ancestor/hidden lock text and failed browser/history access are not model unavailability. Resolve contradictory controls and account usage before fallback; record structured fallback_observation with select_model.",
     "gemini": "Use the signed-in Gemini app; verify included usage and the selected model and thinking setting for each conversation. Consumer app access does not establish Gemini CLI entitlement.",
     "gemini-desktop": "Use the signed-in Gemini desktop app; verify included usage and the selected model and thinking setting for each conversation. Keep disclosure to the authorized packet. Consumer app access does not establish Gemini CLI entitlement.",
     "gemini-spark": "Use the authorized Gemini Spark conversation and only the authorized packet. The exact backend is unverified; record visible model or mode labels only as coordinator observations. Do not expand tool or workspace access or infer CLI entitlement from consumer access.",
-    "meta-ai": "Use the authorized Meta AI conversation and only the authorized packet. Thinking is the strongest exposed mode observed for this route, not a universal model ranking; verify the current visible mode. Consumer app access does not establish CLI entitlement.",
+    "meta-ai": "Use the authorized Meta AI conversation and only the authorized packet. Meta AI and Muse (meta-muse) are distinct reviewer routes; an authorized request for all accessible reviewers includes both independently, with separate conversations and results. Do not substitute one response for the other. Thinking is the strongest exposed mode observed for this route, not a universal model ranking; verify the current visible mode. Consumer app access does not establish CLI entitlement.",
     "meta-muse": (
         "Use the signed-in consumer Muse browser at https://muse.ai/ and only the authorized packet. "
+        "Muse and Meta AI (meta-ai) are distinct reviewer routes; an authorized request for all accessible "
+        "reviewers includes both independently, with separate conversations and results. Do not substitute "
+        "a Meta AI response for a Muse response. Use the user's configured collaborator name and pronouns. "
         "Open Chats and select or create a named project-specific side chat; verify that it is saved, "
         "non-Temporary, and limited to this project rather than sending into an unrelated main chat. "
         "Before each send, observe fresh included usage and verify that the chosen action will not use paid "
         "credits, extra usage, or a paid fallback; if this cannot be established, stop without sending. "
+        "A missing numerical quota display alone does not block a bounded request when the current free "
+        "route is enabled, no quota notice is present, and the verified payment terms require an optional "
+        "upgrade or waiting at the limit rather than automatic paid overage. Record those actual observations "
+        "without inventing remaining capacity. Stop at a limit, paywall, exhausted allowance, or an "
+        "uncertain payment boundary; never enable paid usage to continue. "
         "This is a coordinator check, not a Hub-enforced app billing gate. Inspect the current model/thinking "
         "picker; if there is no adjustable picker, record the explicitly observed provider-managed mode "
         "with default effort and its evidence. Do not invent a model or thinking level. The exact backend "
@@ -61,12 +69,38 @@ HANDOFF = {
         "this same saved side chat for audit."
     ),
     "claude-cowork": "Select and verify this project's exact authorized folders in Cowork each time.",
-    "grok-bot": "Use the actual project-scoped bot conversation; its cloud computer is shared, not an isolation boundary.",
+    "grok-bot": (
+        "Use the actual Grok Bot browser entry in the background and the user's configured collaborator. "
+        "Do not focus or launch a desktop fallback without a fresh explicit user request. "
+        "A headless route or wrapper is only usable after its supported Bot messaging and response-return "
+        "behavior, existing account entitlement, and saved bot/conversation continuity are verified. "
+        "Do not extract authentication cookies or bypass app controls to construct such a route. "
+        "A previously observed browser entry has the form https://grok.com/bot/<observed-id>; recover "
+        "the actual bot reference from saved project evidence or the current app, never invent an ID. "
+        "Verify the intended bot and saved project thread or anchor from the app's own history; "
+        "a name or URL pattern alone does not establish continuity or current access. "
+        "Keep Grok Bot in addition to Grok Build (grok); never substitute "
+        "Grok Build, ordinary grok.com chat, or the xAI API for this route. Before sending, inspect "
+        "the account and plan, then the usage meter that actually covers this Bot. Record its product "
+        "scope, label, used-versus-remaining meaning, value/reset, and observation time. For legacy "
+        "linked plans use the Cursor Spending > Grok Bot meter or Bot Weekly usage limit; use the "
+        "shared weekly pool only for a verified The X Subscription account/plan. A general SuperGrok "
+        "or Build percentage alone does not establish Bot exhaustion or availability. Missing or "
+        "unrelated evidence is unknown; do not label it exhausted. Verify the applicable paid-extra "
+        "controls separately, including on-demand or shared-plan credit fallback; do not change them. "
+        "Inspect current model "
+        "controls or record their observed absence as provider-managed mode; do not invent a model "
+        "or thinking picker. Its cloud computer is shared, not an isolation boundary: limit the task "
+        "to the authorized packet and actions, with no unrelated files, accounts, or connectors. "
+        "Verify exact attachment chips, preserve the bot/conversation reference, and record response "
+        "and completion evidence from that same saved conversation. The Hub prepares and records "
+        "handoffs; it has no verified headless Bot response adapter. If no authorized background route is accessible, retain the unsent "
+        "packet and report that limit without rerouting."
+    ),
     "microsoft-copilot": "Use the signed-in consumer app with the strongest verified appropriate mode; no consumer subscription CLI route is established.",
     "github-copilot": "Verify current account access and subscription entitlement before using this route. Do not work around account restrictions.",
 }
-HANDOFF_CONVERSATION_POLICY = (
-    "Use a normal saved, non-Temporary conversation dedicated to this project and name it clearly so the user can audit it. "
+HANDOFF_SAVED_HISTORY_POLICY = (
     "Before sending, inspect the actual conversation mode and history controls and verify that normal saved mode "
     "is active; never use Temporary, incognito, or otherwise unsaved chat. "
     "A brand-new normal saved conversation need not already have a URL or history entry before its first send. "
@@ -81,6 +115,17 @@ HANDOFF_CONVERSATION_POLICY = (
     "Interrupted or uncertain output remains needs_continuation; do not close the acknowledgment or compare final "
     "findings yet. Continue only in this same saved conversation, then record the exact previous_turn_id and "
     "the prior checks actually resolved. Missing completion observations remain unknown."
+)
+HANDOFF_CONVERSATION_POLICY = (
+    "Use a normal saved, non-Temporary conversation dedicated to this project and name it clearly so the user can audit it. "
+    + HANDOFF_SAVED_HISTORY_POLICY
+)
+GROK_BOT_CONVERSATION_POLICY = (
+    "Use a saved project-specific thread when the actual Grok Bot UI supports one. If it only provides "
+    "a persistent bot conversation or reply thread, preserve that reference and put a clear project "
+    "anchor in the packet and result evidence; do not claim a new isolated conversation or filesystem. "
+    "Verify that this anchored exchange is saved and can be reopened without inspecting unrelated history. "
+    + HANDOFF_SAVED_HISTORY_POLICY
 )
 
 
@@ -228,13 +273,21 @@ class Hub:
                 "route_counts": {"automated": len(AUTO), "coordinator_handoff": len(HANDOFF), "retired": len(RETIRED)},
                 "limits": f"{len(AUTO)} automated checker routes, each requiring a reviewed helper pin. No project editing or ACP session implementation. Handoffs do not send messages."}
 
+    def _configured_provider(self, provider: str) -> str:
+        # Canonical inventory remains readable during legacy alias conflicts.
+        # A configured collaborator alias must retain its exact route, including
+        # app routes that cannot be dispatched through an automated CLI.
+        return provider if isinstance(provider, str) and provider in PROVIDERS else self.identity.resolve_provider(provider)
+
     def model_status(self, provider: str) -> dict:
+        provider = self._configured_provider(provider)
         provider = LEGACY_AUTO.get(provider, provider)
         if provider not in AUTO and provider not in HANDOFF:
             raise ValueError("Choose an active reviewer route")
         return self.models.status(provider)
 
     def refresh_models(self, provider: str) -> dict:
+        provider = self._configured_provider(provider)
         provider = LEGACY_AUTO.get(provider, provider)
         if provider in HANDOFF:
             return {**self.model_status(provider), "refresh_required": True,
@@ -248,16 +301,22 @@ class Hub:
                                   "official_cli", result.get("runtime_version", ""), observed_at=started_at,
                                   runtime_update=result.get("runtime_update"))
 
-    def record_models(self, provider: str, models: list[dict], evidence: str, observed_at: str) -> dict:
+    def record_models(self, provider: str, models: list[dict], evidence: str, observed_at: str,
+                      selection_policy: dict | None = None) -> dict:
         provider = self.identity.resolve_provider(provider)
         if provider not in HANDOFF:
             raise ValueError("CLI reviewers use refresh_models; app observations cannot substitute for CLI discovery")
-        return self.models.record(provider, models, evidence, "observed_app", observed_at=observed_at)
+        return self.models.record(provider, models, evidence, "observed_app", observed_at=observed_at,
+                                  selection_policy=selection_policy)
 
-    def select_model(self, provider: str, model: str, effort: str, catalog_fingerprint: str, evidence: str) -> dict:
+    def select_model(self, provider: str, model: str, effort: str, catalog_fingerprint: str, evidence: str,
+                     fallback_observation: dict | None = None, selection_basis: str | None = None,
+                     override_evidence: str | None = None) -> dict:
+        provider = self._configured_provider(provider)
         provider = LEGACY_AUTO.get(provider, provider)
         self.model_status(provider)
-        return self.models.select(provider, model, effort, catalog_fingerprint, evidence)
+        return self.models.select(provider, model, effort, catalog_fingerprint, evidence, fallback_observation,
+                                  selection_basis, override_evidence)
 
     def observe_usage(self, provider: str, project: str, observed_at: str, evidence: str,
                       included_available: bool, paid_usage_disabled: bool, max_jobs: int = 1) -> dict:
@@ -537,7 +596,7 @@ class Hub:
 
     def capabilities(self, provider: str | None = None) -> dict:
         from .capabilities import all_capabilities, route_capabilities
-        return route_capabilities(provider) if provider is not None else all_capabilities()
+        return route_capabilities(self._configured_provider(provider)) if provider is not None else all_capabilities()
 
     def _review_record(self, c, project, job_id, kind):
         row = c.execute("SELECT data FROM review_records WHERE project=? AND job_id=? AND kind=? ORDER BY rowid DESC LIMIT 1",
@@ -692,6 +751,15 @@ class Hub:
         if provider not in HANDOFF:
             raise ValueError("Unknown handoff route")
         request = packet_text(prompt, self.identity.greeting())
+        if provider == "grok-bot":
+            request += (
+                "\n\nGrok Bot scope: The shared cloud computer is not an isolation boundary. "
+                "Review only the authorized packet and actions above. Existing access to other "
+                "files, accounts, browser sessions, or connectors is not permission to use them. "
+                "Do not modify connected services, publish, contact others, or schedule work "
+                "unless explicitly authorized in this request. Report missing inputs or access "
+                "rather than expanding scope.\n"
+            )
         snapshots = read_files(project, attachments)
         if snapshots:
             request += "\n\nFile manifest for this handoff (verify the files are actually attached before sending):\n" + json.dumps([
@@ -712,16 +780,22 @@ class Hub:
                 "model_selection_basis": "Coordinator-observed app model options or explicitly provider-managed mode at preparation; local descriptors do not verify backend identity; verify again at actual send",
                 "backend_model_verified": False,
                 "created_at": now(), "submission": "not_sent", "conversation_ref": conversation_ref,
-                "instructions": HANDOFF[provider] + " " + HANDOFF_CONVERSATION_POLICY
+                "instructions": HANDOFF[provider] + " " + (
+                    GROK_BOT_CONVERSATION_POLICY if provider == "grok-bot" else HANDOFF_CONVERSATION_POLICY)
                     + " Verify the app's current model options or explicitly observed provider-managed mode before sending. "
                     + "Saved local selection descriptor: " + selected["model"] + "; effort descriptor: " + selected["effort"]
                     + ". Apply a model or adjustable thinking choice only when the corresponding control is actually offered. "
                     + "The default descriptor does not assert an exposed thinking level, and neither descriptor verifies backend identity. "
-                    + "If options changed, refresh the catalog and ask the user again.", "configured_context": self.identity.note(provider),
+                    + "If options changed, refresh the catalog and reapply an applicable standing primary/fallback policy; ask only before an unapproved model or effort change.", "configured_context": self.identity.note(provider),
                 "collaborator_name": identity["collaborators"].get(provider), "evidence_directory": str(directory),
                 "identity_snapshot": {k: identity[k] for k in ("agent_name", "user_name", "collaborators")},
                 "packet_sha256": digest(request.encode("utf-8")), "claims_independently_verified": False}
         data.update(handoff_route_metadata(provider))
+        if selected.get("fallback_observation"):
+            data["fallback_observation"] = selected["fallback_observation"]
+        for key in ("selection_policy", "selection_basis", "override_evidence"):
+            if key in selected:
+                data[key] = selected[key]
         if manifest:
             data.update(attachments=manifest, attachment_manifest_sha256=manifest_digest(manifest),
                         attachment_transport="app_file_handoff", attachment_delivery="prepared_not_sent")

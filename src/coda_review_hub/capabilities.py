@@ -31,6 +31,57 @@ OUTPUT_TRANSPORTS = frozenset({"app_file_handoff", "returned_file_snapshot"})
 
 def handoff_route_metadata(provider: str) -> dict:
     """Describe an app entry route without claiming live access or dispatch."""
+    if provider == "grok-bot":
+        return {
+            "label": "Grok Bot",
+            "app_surface": "browser",
+            "foreground_desktop_fallback": False,
+            "headless_response_route_verified": False,
+            "observed_browser_entry_pattern": "https://grok.com/bot/<observed-id>",
+            "agent_runtime": "provider_shared_cloud_computer",
+            "dispatch_mode": "manual_coordinator",
+            "automatic_fallback": False,
+            "current_app_observation_required": True,
+            "billing_enforcement": "coordinator_observation_only",
+            "usage_contract": {
+                "account_and_plan_required": True,
+                "legacy_meter": "Cursor dashboard Spending > Grok Bot, or the Bot plan's Weekly usage limit",
+                "shared_plan_meter": "The X Subscription shared weekly pool only when that account and plan are verified",
+                "general_grok_percentage_alone_proves_bot_allowance": False,
+                "unknown_meter_conclusion": "unknown",
+                "required_meter_evidence": [
+                    "account_and_plan", "product_scope", "meter_label",
+                    "used_or_remaining", "value_and_reset", "paid_extra_controls", "observed_at",
+                ],
+                "source": "https://cursor.com/help/grok-bot/plans",
+                "scope_note": (
+                    "Match the observed meter to this account's actual plan. Legacy linked Bot usage "
+                    "and general Grok usage must not be conflated. A verified shared-pool plan may "
+                    "use one applicable pool; do not assume either separation or sharing from a brand name. "
+                    "Missing or unrelated meter evidence means unknown, not exhausted or available. "
+                    "Verify the applicable paid-extra controls separately; a remaining percentage alone "
+                    "does not establish the subscription-only boundary."
+                ),
+            },
+            "required_observations": [
+                "signed_in_account", "configured_bot_identity_and_conversation",
+                "account_plan_and_applicable_usage_meter",
+                "included_usage_and_disabled_applicable_paid_fallback",
+                "model_picker_or_explicit_provider_managed_mode", "saved_project_thread_or_anchor",
+                "supported_attachment_controls", "authorized_agent_scope",
+            ],
+            "entitlement_note": (
+                "Use the verified Grok Bot browser entry in the background, preserving the intended bot reference. "
+                "Do not focus or launch a desktop fallback without a fresh explicit user request. "
+                "No supported headless Bot response route is currently verified by this Hub. "
+                "The browser URL pattern is a discovery hint, not proof of current access or bot identity. "
+                "Grok Bot is an additional app route, separate from Grok Build (grok), "
+                "ordinary grok.com chat, and the xAI API. No automatic substitution is "
+                "permitted. App identity, included usage, and paid-usage settings require "
+                "current coordinator observations; the Hub does not drive this app or "
+                "enforce its billing settings. A shared cloud computer is not isolation."
+            ),
+        }
     if provider != "meta-muse":
         return {}
     return {

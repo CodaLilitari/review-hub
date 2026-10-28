@@ -70,6 +70,115 @@ def runtime_advisory(value):
     return result
 
 
+def validate_fallback_observation(value, catalog, model, effort):
+    """Validate an app coordinator's scoped evidence, never infer it from prose."""
+    fields = {"primary_model", "primary_effort", "target_model", "target_effort", "workspace",
+              "scope", "state", "enabled", "selected", "selected_model", "selected_effort",
+              "observed_at", "evidence"}
+    if not isinstance(value, dict) or set(value) - fields or catalog["source"] != "observed_app":
+        raise ValueError("Conditional app fallback needs a structured exact-control or provider-request observation")
+    result = {key: text(value.get(key), "fallback " + key, 4000 if key == "evidence" else 300)
+              for key in ("primary_model", "primary_effort", "target_model", "target_effort", "workspace",
+                          "scope", "state", "observed_at", "evidence")}
+    primary = (result["primary_model"], result["primary_effort"])
+    if primary != (result["target_model"], result["target_effort"]) or primary == (model, effort):
+        raise ValueError("Fallback evidence must target the exact unavailable primary model and effort")
+    try:
+        observed = datetime.fromisoformat(result["observed_at"].replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            raise ValueError()
+        fresh = time.time() - FRESH_SECONDS <= observed.timestamp() <= time.time() + 30
+    except (ValueError, TypeError, OverflowError):
+        fresh = False
+    if not fresh:
+        raise ValueError("Refresh the exact primary control/request observation before conditional fallback")
+    if observed.timestamp() + 0.000001 < catalog["checked_at"]:
+        raise ValueError("Fallback evidence predates the latest catalog observation; recheck the primary for this catalog")
+    if result["scope"] == "exact_control":
+        if result["state"] != "disabled" or value.get("enabled") is not False or value.get("selected") is not False:
+            raise ValueError("An enabled, selected or ambiguous primary control cannot establish fallback unavailability")
+        if "selected_model" in value or "selected_effort" in value:
+            raise ValueError("Exact-control fallback cannot mix provider-request selection evidence")
+        if any(m["id"] == primary[0] and primary[1] in m["efforts"] for m in catalog["models"]):
+            raise ValueError("Disabled-control evidence contradicts the account-accessible catalog; inspect the actual control")
+        result.update(enabled=False, selected=False)
+    elif result["scope"] == "provider_request":
+        selected = (value.get("selected_model"), value.get("selected_effort"))
+        if result["state"] not in {"unavailable", "limit_reached"} or selected != primary:
+            raise ValueError("Provider fallback needs an explicit unavailable/limit error from a request with the primary selected")
+        if "enabled" in value or "selected" in value:
+            raise ValueError("Provider-request fallback cannot mix picker-control evidence")
+        result.update(selected_model=primary[0], selected_effort=primary[1])
+    else:
+        raise ValueError("Menu, ancestor, hidden text, history or browser errors cannot establish exact-model fallback")
+    return result
+
+
+def normalize_selection_policy(value):
+    fields = {"primary_model", "primary_effort", "fallback_model", "fallback_effort", "workspace"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("App selection policy needs exact primary/fallback model and effort plus workspace")
+    result = {key: text(value[key], "selection policy " + key, 300) for key in fields}
+    if (result["primary_model"], result["primary_effort"]) == (result["fallback_model"], result["fallback_effort"]):
+        raise ValueError("Primary and fallback choices must differ")
+    return result
+
+
+def install_policy_compatibility_fence(connection):
+    """Old in-memory workers must not discard or bypass a newly saved policy.
+
+    Existing rows are preserved. These guards cover the shared SQL write paths;
+    they are a client compatibility fence, not provider evidence verification.
+    """
+    statements = []
+    valid_choice = """
+        json_extract({choice}, '$.policy_contract_version') = 1
+        AND json_extract({choice}, '$.selection_policy') = json_extract(c.data, '$.selection_policy')
+        AND json_extract({choice}, '$.catalog_fingerprint') = json_extract(c.data, '$.fingerprint')
+        AND CASE json_extract({choice}, '$.selection_basis')
+          WHEN 'primary' THEN
+            json_extract({choice}, '$.model') = json_extract(c.data, '$.selection_policy.primary_model')
+            AND json_extract({choice}, '$.effort') = json_extract(c.data, '$.selection_policy.primary_effort')
+          WHEN 'conditional_fallback' THEN
+            json_extract({choice}, '$.model') = json_extract(c.data, '$.selection_policy.fallback_model')
+            AND json_extract({choice}, '$.effort') = json_extract(c.data, '$.selection_policy.fallback_effort')
+            AND json_extract({choice}, '$.policy_catalog_checked_at') = json_extract(c.data, '$.checked_at')
+            AND json_type({choice}, '$.fallback_observation') = 'object'
+            AND julianday(json_extract({choice}, '$.fallback_observation.observed_at'))
+                BETWEEN julianday('now', '-900 seconds') AND julianday('now', '+30 seconds')
+          WHEN 'explicit_user_override' THEN
+            json_extract({choice}, '$.policy_catalog_checked_at') = json_extract(c.data, '$.checked_at')
+            AND length(trim(json_extract({choice}, '$.override_evidence'))) >= 12
+          ELSE 0 END
+    """
+    for event in ("INSERT", "UPDATE"):
+        suffix = event.lower()
+        statements.append(f"""
+            CREATE TRIGGER IF NOT EXISTS model_policy_catalog_{suffix}_v1 BEFORE {event} ON catalogs
+            WHEN (json_type(NEW.data, '$.selection_policy') IS NOT NULL OR EXISTS
+                  (SELECT 1 FROM catalogs c WHERE c.provider=NEW.provider
+                   AND json_type(c.data, '$.selection_policy') IS NOT NULL))
+              AND (json_type(NEW.data, '$.selection_policy') IS NOT 'object'
+                   OR json_extract(NEW.data, '$.policy_contract_version') IS NOT 1)
+            BEGIN SELECT RAISE(ABORT, 'Model policy requires current Hub code; old catalog writes cannot drop it'); END;
+            CREATE TRIGGER IF NOT EXISTS model_policy_choice_{suffix}_v1 BEFORE {event} ON choices
+            WHEN EXISTS (SELECT 1 FROM catalogs c WHERE c.provider=NEW.provider
+                         AND json_type(c.data, '$.selection_policy') IS NOT NULL)
+              AND NOT EXISTS (SELECT 1 FROM catalogs c WHERE c.provider=NEW.provider
+                              AND ({valid_choice.format(choice='NEW.data')}))
+            BEGIN SELECT RAISE(ABORT, 'Model policy requires a current classified choice; use fresh Hub code'); END;
+            CREATE TRIGGER IF NOT EXISTS model_policy_consume_{suffix}_v1 BEFORE {event} ON app_uses
+            WHEN EXISTS (SELECT 1 FROM catalogs c WHERE c.provider=NEW.provider
+                         AND json_type(c.data, '$.selection_policy') IS NOT NULL)
+              AND NOT EXISTS (SELECT 1 FROM catalogs c JOIN choices q ON q.provider=c.provider
+                              WHERE c.provider=NEW.provider
+                              AND NEW.observed_at=json_extract(c.data, '$.checked_at')
+                              AND ({valid_choice.format(choice='q.data')}))
+            BEGIN SELECT RAISE(ABORT, 'Model policy blocks an unbound or stale choice; use fresh Hub code'); END;
+        """)
+    connection.executescript("BEGIN IMMEDIATE;" + "\n".join(statements) + "COMMIT;")
+
+
 class ModelStore:
     def __init__(self, state):
         self.path = Path(state) / "reviewer-models.sqlite3"
@@ -78,6 +187,7 @@ class ModelStore:
             c.executescript("CREATE TABLE IF NOT EXISTS catalogs(provider TEXT PRIMARY KEY, data TEXT NOT NULL);"
                             "CREATE TABLE IF NOT EXISTS choices(provider TEXT PRIMARY KEY, data TEXT NOT NULL);"
                             "CREATE TABLE IF NOT EXISTS app_uses(provider TEXT PRIMARY KEY, observed_at REAL NOT NULL);")
+            install_policy_compatibility_fence(c)
 
     @contextmanager
     def connect(self):
@@ -91,11 +201,16 @@ class ModelStore:
         finally:
             connection.close()
 
-    def record(self, provider, models, evidence, source, runtime_version="", observed_at=None, runtime_update=None):
+    def record(self, provider, models, evidence, source, runtime_version="", observed_at=None, runtime_update=None,
+               selection_policy=None):
         models = normalize_models(models)
         evidence = text(evidence, "catalog evidence", minimum=12)
         if source not in {"official_cli", "observed_app"}:
             raise ValueError("Catalog source must be official_cli or observed_app")
+        if selection_policy is not None:
+            if source != "observed_app":
+                raise ValueError("Standing app selection policy cannot substitute for CLI discovery")
+            selection_policy = normalize_selection_policy(selection_policy)
         if not isinstance(runtime_version, str) or len(runtime_version) > 200:
             raise ValueError("Invalid runtime version observation")
         checked = time.time()
@@ -123,6 +238,10 @@ class ModelStore:
             previous = c.execute("SELECT data FROM catalogs WHERE provider=?", (provider,)).fetchone()
             if previous and json.loads(previous[0])["checked_at"] > checked:
                 raise ValueError("A newer account catalog observation is already saved; do not replace it with an older one")
+            policy = selection_policy if selection_policy is not None else (json.loads(previous[0]).get("selection_policy") if previous else None)
+            if policy is not None:
+                data["selection_policy"] = policy
+                data["policy_contract_version"] = 1
             c.execute("INSERT OR REPLACE INTO catalogs VALUES (?,?)", (provider, canonical(data)))
         return self.status(provider)
 
@@ -140,7 +259,19 @@ class ModelStore:
         consumed = bool(catalog and catalog["source"] == "observed_app" and used and catalog["checked_at"] <= used[0])
         fresh = bool(catalog and catalog["checked_at"] >= time.time() - FRESH_SECONDS and not consumed)
         changed = bool(catalog and chosen and catalog["fingerprint"] != chosen["catalog_fingerprint"])
-        needed = chosen is None or changed
+        policy = catalog.get("selection_policy") if catalog else None
+        policy_recheck = bool(policy and chosen and (
+            chosen.get("selection_policy") != policy or
+            (chosen.get("selection_basis") != "primary" and chosen.get("policy_catalog_checked_at") != catalog["checked_at"])))
+        fallback_recheck = False
+        if chosen and chosen.get("fallback_observation"):
+            fallback_recheck = not catalog or chosen.get("fallback_catalog_checked_at") != catalog["checked_at"]
+            if catalog and not fallback_recheck:
+                try:
+                    validate_fallback_observation(chosen["fallback_observation"], catalog, chosen["model"], chosen["effort"])
+                except ValueError:
+                    fallback_recheck = True
+        needed = chosen is None or changed or fallback_recheck or policy_recheck
         return {"provider": provider, "catalog": catalog, "selection": chosen,
                 "refresh_required": not fresh, "selection_required": needed,
                 "app_observation_consumed": consumed,
@@ -149,13 +280,17 @@ class ModelStore:
                                   if catalog and catalog["source"] == "official_cli" else
                                   "Coordinator-recorded signed-in controls or observed absence/provider-managed mode; local descriptors do not verify backend identity. Verify current app state again at the actual send."
                                   if catalog else "No account model/mode observation has been recorded."),
-                "reason": "first_use" if chosen is None else "catalog_changed" if changed else "unchanged",
+                "reason": "first_use" if chosen is None else "catalog_changed" if changed else "fallback_recheck_required" if fallback_recheck else "selection_policy_recheck_required" if policy_recheck else "unchanged",
                 "next": ("Refresh the account's model/mode options and any available thinking controls" if not fresh else
+                         "Recheck the exact primary model/effort control or request error before selecting a conditional fallback" if fallback_recheck else
+                         "Apply the standing primary policy, or record a verified conditional fallback or current explicit human override" if policy_recheck else
+                         "Reapply the user's standing primary policy, or recheck its conditional fallback; ask only before an unapproved choice" if policy and needed else
                          "Ask the user to choose a model or observed provider-managed mode and an available effort setting, then select_model" if needed else
                          "Use the saved local choice; recheck app observations before a manual send. Automated dispatch rechecks availability"),
                 "sent": False}
 
-    def select(self, provider, model, effort, catalog_fingerprint, evidence):
+    def select(self, provider, model, effort, catalog_fingerprint, evidence, fallback_observation=None,
+               selection_basis=None, override_evidence=None):
         evidence = text(evidence, "user choice evidence", minimum=12)
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -174,6 +309,37 @@ class ModelStore:
                 raise ValueError("Choose a model/mode and effort setting exposed by this account")
             choice = {"model": model, "effort": effort, "catalog_fingerprint": catalog_fingerprint,
                       "evidence": evidence, "chosen_at": datetime.now(timezone.utc).isoformat()}
+            policy = catalog.get("selection_policy")
+            if selection_basis not in {None, "primary", "conditional_fallback", "explicit_user_override"}:
+                raise ValueError("Invalid model selection_basis")
+            if policy:
+                primary = (policy["primary_model"], policy["primary_effort"])
+                if (model, effort) == primary and selection_basis in {None, "primary"}:
+                    selection_basis = "primary"
+                elif selection_basis not in {"conditional_fallback", "explicit_user_override"}:
+                    raise ValueError("Non-primary selection requires selection_basis=conditional_fallback or explicit_user_override")
+                choice.update(selection_policy=policy, policy_catalog_checked_at=catalog["checked_at"], policy_contract_version=1)
+            elif selection_basis is not None or fallback_observation is not None or override_evidence is not None:
+                raise ValueError("Record the user's structured standing selection policy before a classified model choice")
+            if selection_basis == "conditional_fallback":
+                if (model, effort) != (policy["fallback_model"], policy["fallback_effort"]):
+                    raise ValueError("Conditional selection must be the user's approved fallback")
+                if not isinstance(fallback_observation, dict):
+                    raise ValueError("Conditional fallback requires structured fallback_observation")
+                if (fallback_observation.get("primary_model"), fallback_observation.get("primary_effort")) != primary:
+                    raise ValueError("Fallback observation must match the configured primary")
+                if fallback_observation.get("workspace") != policy["workspace"]:
+                    raise ValueError("Fallback observation must match the configured account workspace")
+                choice["fallback_observation"] = validate_fallback_observation(fallback_observation, catalog, model, effort)
+                choice["fallback_catalog_checked_at"] = catalog["checked_at"]
+            elif fallback_observation is not None:
+                raise ValueError("fallback_observation requires selection_basis=conditional_fallback")
+            if selection_basis == "explicit_user_override":
+                choice["override_evidence"] = text(override_evidence, "current human override evidence", minimum=12)
+            elif override_evidence is not None:
+                raise ValueError("override_evidence requires selection_basis=explicit_user_override")
+            if selection_basis is not None:
+                choice["selection_basis"] = selection_basis
             c.execute("INSERT OR REPLACE INTO choices VALUES (?,?)", (provider, canonical(choice)))
         return self.status(provider)
 

@@ -34,8 +34,13 @@ class ConversationPolicyTests(unittest.TestCase):
                     "Synthetic bounded app question.", conversation_ref=prepared_reference)
                 job = prepared["job"]
                 instructions = job["instructions"]
+                if provider == "grok-bot":
+                    self.assertIn("saved project-specific thread when the actual Grok Bot UI supports one", instructions)
+                    self.assertIn("clear project anchor in the packet and result evidence", instructions)
+                    self.assertIn("do not claim a new isolated conversation or filesystem", instructions)
+                else:
+                    self.assertIn("normal saved, non-Temporary conversation dedicated to this project and name it clearly", instructions)
                 for requirement in (
-                    "normal saved, non-Temporary conversation dedicated to this project and name it clearly",
                     "Before sending, inspect the actual conversation mode and history controls",
                     "verify that normal saved mode is active",
                     "brand-new normal saved conversation need not already have a URL or history entry before its first send",

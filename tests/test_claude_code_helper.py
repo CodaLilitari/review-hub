@@ -158,19 +158,153 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         self.assertEqual(args[args.index("--setting-sources") + 1], "")
         self.assertNotIn("--bare", args)
         self.assertNotIn("--fallback-model", args)
+        self.assertEqual(args[args.index("--output-format") + 1], "json")
+        self.assertNotIn("--input-format", args)
+        self.assertNotIn("--verbose", args)
 
     def test_native_input_command_preserves_all_isolation_settings(self):
         native = helper.review_command(self.exe, self.mcp, "opus", "max", "stream-json")
         self.assertEqual(native[native.index("--input-format") + 1], "stream-json")
-        native_without_input = native.copy()
-        index = native_without_input.index("--input-format")
-        del native_without_input[index:index + 2]
-        self.assertEqual(native_without_input, helper.review_command(self.exe, self.mcp, "opus", "max"))
+        self.assertEqual(native[native.index("--output-format") + 1], "stream-json")
+        self.assertEqual(native.count("--verbose"), 1)
+        text = helper.review_command(self.exe, self.mcp, "opus", "max")
+        def without_framing(command):
+            result = command.copy()
+            for flag in ("--input-format", "--output-format"):
+                if flag in result:
+                    index = result.index(flag)
+                    del result[index:index + 2]
+            if "--verbose" in result:
+                result.remove("--verbose")
+            return result
+        self.assertEqual(without_framing(native), without_framing(text))
         self.assertEqual(native[native.index("--tools") + 1], "")
         self.assertIn("--no-session-persistence", native)
         self.assertIn("--strict-mcp-config", native)
         self.assertNotIn("--add-dir", native)
         self.assertIn("supplied image blocks", helper.SYSTEM_PROMPT)
+
+    def review_stream(self, terminal, *, ending=b"\n"):
+        events = [
+            {"type": "system", "subtype": "init", "tools": [], "mcp_servers": [],
+             "session_id": "fixture-session", "diagnostic": "private-init-never-save"},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private-thinking-never-save"},
+                {"type": "text", "text": "private-intermediate-never-save"}]}},
+        ]
+        prefix = b"".join(json.dumps(event).encode("utf-8") + ending for event in events)
+        terminal_bytes = b"  " + json.dumps(terminal, ensure_ascii=False).encode("utf-8") + b" " + ending
+        return prefix + terminal_bytes, terminal_bytes
+
+    def test_stream_output_extracts_exact_terminal_without_intermediate_content(self):
+        terminal = {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "Exact answer π 🖤\r\nTrailing spaces  "}
+        for ending in (b"\n", b"\r\n"):
+            with self.subTest(ending=ending):
+                stdout, exact = self.review_stream(terminal, ending=ending)
+                response, retained = helper.decode_review_output(stdout, "stream-json")
+                self.assertEqual(response, terminal)
+                self.assertEqual(retained, exact)
+                self.assertNotIn(b"private-", retained)
+                response, retained = helper.decode_review_output(stdout[:-len(ending)], "stream-json")
+                self.assertEqual(response, terminal)
+                self.assertEqual(retained, exact[:-len(ending)])
+                response, retained = helper.decode_review_output(b"\n \t\n" + stdout + b"\n", "stream-json")
+                self.assertEqual(response, terminal)
+                self.assertEqual(retained, exact)
+
+    def test_stream_output_accepts_permitted_metadata_and_preserves_terminal_authority(self):
+        events = [
+            {"type": "system", "subtype": "init", "tools": [], "mcp_servers": []},
+            {"type": "assistant", "message": {"role": "assistant", "content": []}},
+            {"type": "user", "message": {"role": "user", "content": "echoed fixture"}},
+            {"type": "stream_event", "event": {"type": "message_stop"}},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
+        ]
+        terminal = {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                    "errors": ["private-error-never-save"]}
+        stdout = b"".join((json.dumps(event) + "\n").encode() for event in [*events, terminal])
+        response, exact = helper.decode_review_output(stdout, "stream-json")
+        self.assertEqual(response, terminal)
+        self.assertEqual(json.loads(exact), terminal)
+        with self.assertRaises(ValueError):
+            helper.capture_response(response, 1)
+        text, receipt = helper.capture_incomplete_response(response)
+        self.assertIsNone(text)
+        self.assertEqual(receipt["completion_reason"], "provider_error")
+        self.assertFalse(receipt["model_review_completed"])
+
+    def test_stream_output_rejects_malformed_unknown_and_nonobject_events(self):
+        terminal = b'{"type":"result","subtype":"success","is_error":false,"result":"Fixture"}\n'
+        prefixes = [
+            b"null\n", b"[]\n", b"1\n", b'"text"\n', b"{}\n",
+            b"{private-invalid-json}\n", b"\xff\n", b'{"type":[]}\n',
+            b'{"type":"unknown_future_event","detail":"private-event-never-save"}\n',
+            b'{"type":"error","message":"private-error-never-save"}\n',
+            b'{"type":"control_request","request":{"subtype":"can_use_tool"}}\n',
+            b'{"type":"assistant","type":"system"}\n',
+            b'{"type":"system","future_metric":NaN}\n',
+        ]
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix), self.assertRaises(ValueError) as caught:
+                helper.decode_review_output(prefix + terminal, "stream-json")
+            self.assertNotIn("private-", str(caught.exception))
+        for stdout in (b"", b" \t", b"\n \t\r\n", b"{\n"):
+            with self.subTest(stdout=stdout), self.assertRaises(ValueError):
+                helper.decode_review_output(stdout, "stream-json")
+
+    def test_stream_output_rejects_error_flags_and_observed_tool_activity(self):
+        terminal = b'{"type":"result","subtype":"success","is_error":false,"result":"Fixture"}\n'
+        contradictions = [
+            {"type": "assistant", "is_error": True, "message": {"content": []}},
+            {"type": "system", "error": "private-provider-error"},
+            {"type": "assistant", "errors": ["private-provider-error"]},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "private-file"}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "unexpected", "content": "private-file-content"}]}},
+            {"type": "stream_event", "event": {"type": "content_block_start", "content_block": {
+                "type": "tool_use", "id": "unexpected", "name": "Read", "input": {}}}},
+        ]
+        for event in contradictions:
+            with self.subTest(event=event), self.assertRaises(ValueError) as caught:
+                helper.decode_review_output((json.dumps(event) + "\n").encode() + terminal, "stream-json")
+            self.assertNotIn("private-", str(caught.exception))
+
+    def test_stream_output_requires_one_terminal_with_no_later_events(self):
+        terminal = b'{"type":"result","subtype":"success","is_error":false,"result":"Fixture"}\n'
+        assistant = b'{"type":"assistant","message":{"content":[{"type":"text","text":"not terminal"}]}}\n'
+        for stdout in (assistant, terminal + terminal, terminal + assistant,
+                       terminal + b'{"type":"error","message":"private-later-error"}\n',
+                       terminal + b"private-malformed-tail"):
+            with self.subTest(stdout=stdout), self.assertRaises(ValueError):
+                helper.decode_review_output(stdout, "stream-json")
+
+    def test_stream_output_byte_and_event_limits_include_terminal(self):
+        terminal = b'{"type":"result","subtype":"success","is_error":false,"result":"Fixture"}\n'
+        event = b'{"type":"system","subtype":"init"}\n'
+        at_count_limit = event * (helper.MAX_REVIEW_EVENTS - 1) + terminal
+        self.assertEqual(helper.decode_review_output(at_count_limit, "stream-json")[1], terminal)
+        with self.assertRaises(ValueError):
+            helper.decode_review_output(event + at_count_limit, "stream-json")
+        prefix, suffix = b'{"type":"system","fixture":"', b'"}\n'
+        filler_size = helper.MAX_REVIEW_OUTPUT_BYTES - len(prefix) - len(suffix) - len(terminal)
+        at_byte_limit = prefix + b"x" * filler_size + suffix + terminal
+        self.assertEqual(helper.decode_review_output(at_byte_limit, "stream-json")[1], terminal)
+        with self.assertRaises(ValueError):
+            helper.decode_review_output(prefix + b"x" * (filler_size + 1) + suffix + terminal, "stream-json")
+
+    def test_text_output_remains_one_exact_json_document(self):
+        terminal = {"type": "result", "subtype": "success", "is_error": False, "result": "Fixture π"}
+        stdout = (json.dumps(terminal, indent=2, ensure_ascii=False) + "\r\n").encode("utf-8")
+        response, exact = helper.decode_review_output(stdout, "text")
+        self.assertEqual(response, terminal)
+        self.assertEqual(exact, stdout)
+        for invalid in (stdout + stdout, b"\xff", b"private-invalid-json"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                helper.decode_review_output(invalid, "text")
+        with self.assertRaises(ValueError):
+            helper.decode_review_output(stdout, "unsupported-format")
 
     def test_native_image_blocks_accept_unicode_and_hash_images_in_order(self):
         # These intentionally test signatures, not complete image decoding.
@@ -300,7 +434,8 @@ class ClaudeCodeHelperTests(unittest.TestCase):
                 "--output-dir", str(output), "--model", "opus", "--effort", "max",
                 "--input-format", "stream-json"]
         response = {"type": "result", "subtype": "success", "is_error": False, "result": "Fixture image review"}
-        result = {"stdout": json.dumps(response).encode(), "stderr": b"", "returncode": 0,
+        stdout, terminal_bytes = self.review_stream(response, ending=b"\r\n")
+        result = {"stdout": stdout, "stderr": b"private-diagnostic-never-save", "returncode": 0,
                   "timed_out": False, "runtime_seconds": 0.01}
         with patch.object(sys, "argv", argv), \
                 patch.object(helper, "discover_in_workspace", return_value=self.catalog()) as discover, \
@@ -311,6 +446,8 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         command, cwd, env, timeout, stdin = child.call_args.args
         self.assertEqual(stdin, raw)
         self.assertEqual(command[command.index("--input-format") + 1], "stream-json")
+        self.assertEqual(command[command.index("--output-format") + 1], "stream-json")
+        self.assertIn("--verbose", command)
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual((output / "prompt.txt").read_bytes(), raw)
         self.assertEqual((output / "request.txt").read_bytes(), raw)
@@ -321,6 +458,9 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         self.assertEqual(metadata["input_transport"], "claude_content_blocks")
         self.assertFalse(metadata["isolation"]["session_persistence"])
         self.assertEqual(metadata["isolation"]["tools"], [])
+        self.assertEqual((output / "response.raw.json").read_bytes(), terminal_bytes)
+        self.assertEqual((output / "result.txt").read_text(encoding="utf-8"), "Fixture image review\n")
+        self.assertNotIn(b"private-", b"".join(path.read_bytes() for path in output.iterdir()))
 
     def test_environment_removes_alternative_credentials(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-secret", "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -503,12 +643,17 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         self.assertEqual(receipt["verified_response_models"], [])
         self.assertEqual(receipt["observed_cli_models"], ["future-model"])
 
-    def invoke_response_fixture(self, response, *, returncode=1, timed_out=False):
+    def invoke_response_fixture(self, response, *, returncode=1, timed_out=False, input_format="text"):
         packet = self.root / "failure-packet.txt"
-        packet.write_text("Synthetic fixture only", encoding="utf-8")
+        if input_format == "stream-json":
+            packet.write_bytes(self.native_bytes())
+        else:
+            packet.write_text("Synthetic fixture only", encoding="utf-8")
         output = self.root / ("response-fixture-" + str(len(list(self.root.iterdir()))))
         argv = ["helper", "--config", str(self.config_file), "--prompt-file", str(packet),
                 "--output-dir", str(output), "--model", "opus", "--effort", "max"]
+        if input_format != "text":
+            argv += ["--input-format", input_format]
         stdout = response if isinstance(response, bytes) else json.dumps(response).encode("utf-8")
         fixture = {"stdout": stdout, "stderr": b"private-diagnostic-never-save",
                    "returncode": returncode, "timed_out": timed_out, "runtime_seconds": 0.01}
@@ -522,6 +667,63 @@ class ClaudeCodeHelperTests(unittest.TestCase):
         metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
         self.assertFalse(metadata["automatic_retry_attempted"])
         return output, metadata, exit_code
+
+    def test_native_partial_stream_preserves_exact_partial_and_discards_verbose_content(self):
+        text = "Partial native review π 🖤\r\nTrailing spaces  "
+        terminal = {"type": "result", "subtype": "error_max_turns", "is_error": True,
+                    "result": text, "terminal_reason": "max_turns", "stop_reason": "end_turn",
+                    "errors": ["private-terminal-diagnostic-never-save"]}
+        stdout, _ = self.review_stream(terminal)
+        output, metadata, exit_code = self.invoke_response_fixture(stdout, input_format="stream-json")
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(metadata["status"], "response_received_incomplete")
+        self.assertTrue(metadata["response_received"])
+        self.assertFalse(metadata["model_review_completed"])
+        self.assertEqual(metadata["completion_reason"], "tool_limit")
+        self.assertTrue(metadata["partial_answer_available"])
+        self.assertEqual((output / "partial_result.txt").read_bytes(), text.encode("utf-8"))
+        self.assertEqual(metadata["partial_answer_sha256"], helper.sha256(text.encode("utf-8")))
+        self.assertFalse((output / "response.raw.json").exists())
+        self.assertFalse((output / "result.txt").exists())
+        self.assertNotIn(b"private-", b"".join(path.read_bytes() for path in output.iterdir()))
+
+    def test_native_provider_error_overrides_intermediate_answer_without_retaining_diagnostics(self):
+        terminal = {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                    "result": "private-provider-error-never-save", "stop_reason": "end_turn",
+                    "terminal_reason": "image_error", "errors": ["private-auth-code-never-save"]}
+        stdout, _ = self.review_stream(terminal)
+        output, metadata, exit_code = self.invoke_response_fixture(stdout, input_format="stream-json")
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(metadata["status"], "response_received_incomplete")
+        self.assertTrue(metadata["response_received"])
+        self.assertFalse(metadata["model_review_completed"])
+        self.assertEqual(metadata["completion_reason"], "provider_error")
+        self.assertEqual(metadata["response_terminal_reason"], "image_error")
+        self.assertFalse(metadata["partial_answer_available"])
+        for name in ("response.raw.json", "result.txt", "partial_result.txt"):
+            self.assertFalse((output / name).exists())
+        self.assertNotIn(b"private-", b"".join(path.read_bytes() for path in output.iterdir()))
+
+    def test_native_invalid_streams_cannot_turn_success_shaped_content_into_completion(self):
+        terminal = {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "Unverified native fixture"}
+        stdout, exact = self.review_stream(terminal)
+        invalid = [stdout + exact, stdout + b'{"type":"system"}\n', stdout + b"private-invalid-tail",
+                   stdout[:-len(exact)], b"[]\n" + stdout,
+                   b'{"type":"error","message":"private-error-never-save"}\n' + stdout,
+                   b'{"type":"assistant"}\n' * helper.MAX_REVIEW_EVENTS + exact]
+        for index, response in enumerate(invalid):
+            with self.subTest(case=index):
+                output, metadata, exit_code = self.invoke_response_fixture(
+                    response, returncode=0, input_format="stream-json")
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(metadata["status"], "delivery_unknown")
+                self.assertFalse(metadata["response_received"])
+                self.assertFalse(metadata["model_review_completed"])
+                self.assertFalse(metadata["partial_answer_available"])
+                for name in ("response.raw.json", "result.txt", "partial_result.txt"):
+                    self.assertFalse((output / name).exists())
+                self.assertNotIn(b"private-", b"".join(path.read_bytes() for path in output.iterdir()))
 
     def test_limit_results_preserve_exact_partial_without_becoming_final(self):
         text = "Partial fixture π 🖤\r\nPreserve these trailing spaces  "

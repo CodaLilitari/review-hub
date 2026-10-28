@@ -99,6 +99,8 @@ class GrokHelperTests(unittest.TestCase):
             env = helper.safe_env(self.profile)
         self.assertFalse(set(dangerous) & set(env))
         self.assertEqual(env["GROK_HOME"], str(self.profile))
+        self.assertEqual(env["HOME"], str(self.profile))
+        self.assertEqual(env["USERPROFILE"], str(self.profile))
         self.assertEqual(env["GROK_CLAUDE_HOOKS_ENABLED"], "0")
         self.assertEqual(env["GROK_WORKFLOWS"], "0")
 
@@ -116,8 +118,12 @@ class GrokHelperTests(unittest.TestCase):
         with patch.object(worker_helper, "DEFAULT_CONFIG", self.config_path), patch.dict(os.environ, injected):
             env = worker_helper.safe_env()
             explicit = worker_helper.safe_env(self.profile)
-        self.assertEqual(env, explicit)
+        self.assertEqual({k: v for k, v in env.items() if k not in {"HOME", "USERPROFILE"}},
+                         {k: v for k, v in explicit.items() if k not in {"HOME", "USERPROFILE"}})
         self.assertEqual(env["GROK_HOME"], str(self.profile.resolve()))
+        self.assertEqual(env.get("USERPROFILE"), os.environ.get("USERPROFILE"))
+        self.assertEqual(explicit["HOME"], str(self.profile.resolve()))
+        self.assertEqual(explicit["USERPROFILE"], str(self.profile.resolve()))
         self.assertFalse({"XAI_API_KEY", "GROK_AUTH_PATH", "HTTPS_PROXY", "PYTHONPATH"} & set(env))
         self.assertEqual(env["GROK_CLAUDE_HOOKS_ENABLED"], "0")
         self.assertEqual(env["GROK_DISABLE_AUTOUPDATER"], "1")
@@ -169,6 +175,18 @@ class GrokHelperTests(unittest.TestCase):
         result = helper.inspect_startup(data, self.profile)
         self.assertFalse(result["passed"])
         self.assertIn("unexpected_config_key_group", result["failure_categories"])
+
+    def test_official_installer_marker_does_not_allow_custom_installer_or_user_skills(self):
+        data = self.startup()
+        config_file = self.profile / "config.toml"
+        data["configSources"]["layers"] = [{"role": "user", "path": str(config_file)}]
+        config_file.write_text('[cli]\ninstaller = "internal"\n', encoding="utf-8")
+        self.assertTrue(helper.inspect_startup(data, self.profile)["passed"])
+        config_file.write_text('[cli]\ninstaller = "untrusted-command"\n', encoding="utf-8")
+        self.assertIn("unexpected_installer_marker", helper.inspect_startup(data, self.profile)["failure_categories"])
+        config_file.write_text('[cli]\ninstaller = "internal"\n', encoding="utf-8")
+        data["skills"] = [{"source": {"type": "user", "path": str(self.root / "unrelated/SKILL.md")}}]
+        self.assertIn("non_bundled_skill", helper.inspect_startup(data, self.profile)["failure_categories"])
 
     def test_startup_rejects_hooks_external_imports_and_unexpected_layers(self):
         data = self.startup()
@@ -277,6 +295,22 @@ class GrokHelperTests(unittest.TestCase):
         self.assertIsInstance(catalog["evidence"], str)
         self.assertLess(len(catalog["evidence"]), 300)
         self.assertFalse(catalog["discovery_details"]["subscription_quota_verified"])
+
+    def test_discovery_accepts_known_channel_suffix_and_rejects_unrecognized_version_tail(self):
+        trust = {"method": "fixture", "valid": True, "executable_sha256": helper.sha256(self.exe.read_bytes())}
+        for tail in (" [stable]", " [alpha]", " [unknown]", " unexpected"):
+            version = "grok 1.0.52 (0920c8169e27)" + tail
+            results = [self.result(version.encode()), self.result(json.dumps(self.startup()).encode()),
+                       self.result(b"You are logged in with grok.com.\nAvailable models:\n * grok-future (default)\n - grok-plain\n")]
+            with self.subTest(tail=tail), patch.object(helper, "verify_runtime", return_value=trust), \
+                 patch.object(helper, "run_child", side_effect=results) as child, \
+                 patch.object(helper, "acp_catalog", return_value=(self.catalog_payload(), {"prompt_sent": False})):
+                if tail in (" [stable]", " [alpha]"):
+                    self.assertEqual(helper._discover(self.config, self.work, {})["runtime_version"], version)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "Invalid Grok runtime version"):
+                        helper._discover(self.config, self.work, {})
+                    self.assertEqual(child.call_count, 1)
 
     def test_response_accepts_additive_metadata_and_rejects_conflicting_completion(self):
         self.assertTrue(helper.capture_response(self.response(additive={"future": 1}))["model_review_completed"])

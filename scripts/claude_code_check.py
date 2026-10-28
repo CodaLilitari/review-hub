@@ -34,6 +34,8 @@ MAX_NATIVE_PACKET_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_INPUT_IMAGES = 16
 MAX_METADATA_BYTES = 4 * 1024 * 1024
+MAX_REVIEW_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_REVIEW_EVENTS = 4096
 MAX_PARTIAL_ANSWER_BYTES = 1024 * 1024
 RESULT_SUBTYPES = {"success", "error_max_turns", "error_max_budget_usd",
                    "error_during_execution", "error_max_structured_output_retries"}
@@ -265,6 +267,27 @@ def validate_commands_changed(event: dict) -> None:
             raise ValueError("Claude Code command catalog metadata was malformed")
 
 
+def validate_ui_invalidate(event: dict) -> None:
+    """Discard only the observed no-payload UI redraw notice during discovery.
+
+    This is not a hook invocation or an instruction to redraw. Accept only the
+    exact observed five-field envelope; other UI event variants remain closed.
+    """
+    if (not isinstance(event, dict)
+            or set(event) != {"type", "subtype", "event", "uuid", "session_id"}
+            or event.get("type") != "system" or event.get("subtype") != "ui_invalidate"
+            or event.get("event") != "ui.render"):
+        raise ValueError("Claude Code UI invalidation metadata was malformed or exposed unexpected fields")
+    for key in ("uuid", "session_id"):
+        value = event[key]
+        try:
+            canonical_uuid = str(uuid.UUID(value)) if isinstance(value, str) else None
+        except (ValueError, AttributeError):
+            canonical_uuid = None
+        if canonical_uuid is None or value != canonical_uuid:
+            raise ValueError("Claude Code UI invalidation metadata was malformed")
+
+
 def initialize_metadata(command, cwd: Path, env: dict, timeout=45) -> dict:
     """Exchange one initialize frame, then close; never enqueue user input."""
     process = subprocess.Popen(command, cwd=str(cwd), env=env, stdin=subprocess.PIPE,
@@ -338,6 +361,9 @@ def initialize_metadata(command, cwd: Path, env: dict, timeout=45) -> dict:
                 continue
             if event.get("type") == "system" and event.get("subtype") == "commands_changed":
                 validate_commands_changed(event)
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "ui_invalidate":
+                validate_ui_invalidate(event)
                 continue
             raise ValueError("Claude Code discovery received non-metadata activity; no user prompt was sent")
         raise ValueError("Claude Code model discovery timed out without sending a user prompt")
@@ -482,9 +508,10 @@ def review_command(exe: Path, mcp_file: Path, model: str, effort: str,
                    input_format: str = "text") -> list[str]:
     if input_format not in ("text", "stream-json"):
         raise ValueError("Unsupported Claude Code review input format")
-    args = isolation_args(exe, mcp_file) + ["--output-format", "json", "--model", model]
+    output_format = "stream-json" if input_format == "stream-json" else "json"
+    args = isolation_args(exe, mcp_file) + ["--output-format", output_format, "--model", model]
     if input_format == "stream-json":
-        args += ["--input-format", "stream-json"]
+        args += ["--input-format", "stream-json", "--verbose"]
     if effort != "default":
         args += ["--effort", effort]
     return args + ["-p"]
@@ -497,6 +524,67 @@ def unique_json_object(pairs: list[tuple[str, object]]) -> dict:
             raise ValueError("Native review packet contains duplicate JSON keys")
         value[key] = item
     return value
+
+
+def decode_review_output(stdout: bytes, input_format: str = "text") -> tuple[object, bytes]:
+    """Extract one terminal result without retaining verbose intermediate content.
+
+    Native input requires the CLI's verbose JSONL output. Only the final result
+    is passed to the existing completion classifiers; assistant text/thinking,
+    startup metadata and error diagnostics never become a substitute answer.
+    The text route retains its existing single-JSON response contract.
+    """
+    if input_format == "text":
+        try:
+            return json.loads(stdout), stdout
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise ValueError("Claude Code returned invalid response JSON") from None
+    if input_format != "stream-json":
+        raise ValueError("Unsupported Claude Code review output input format")
+    if not 0 < len(stdout) <= MAX_REVIEW_OUTPUT_BYTES:
+        raise ValueError("Claude Code review stream is empty or exceeds its bounded output limit")
+
+    def reject_constant(value: str) -> None:
+        raise ValueError("Nonfinite JSON value")
+
+    permitted = {"system", "assistant", "user", "stream_event", "rate_limit_event", "result"}
+    tool_types = {"tool_use", "server_tool_use", "tool_result", "mcp_tool_use", "mcp_tool_result"}
+    terminal, terminal_bytes, events = None, b"", 0
+    for raw_line in stdout.splitlines(keepends=True):
+        if not raw_line.strip():
+            continue
+        events += 1
+        if events > MAX_REVIEW_EVENTS:
+            raise ValueError("Claude Code review stream exceeds its bounded event limit")
+        if terminal is not None:
+            raise ValueError("Claude Code review stream contains events after its terminal result")
+        try:
+            event = json.loads(raw_line.decode("utf-8"), object_pairs_hook=unique_json_object,
+                               parse_constant=reject_constant)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise ValueError("Claude Code returned malformed review stream JSON") from None
+        if (not isinstance(event, dict) or not isinstance(event.get("type"), str)
+                or event["type"] not in permitted):
+            raise ValueError("Claude Code returned an unsupported review stream event")
+        if event["type"] == "result":
+            terminal, terminal_bytes = event, raw_line
+            continue
+        if event.get("is_error") or response_contradictions(event):
+            raise ValueError("Claude Code review stream contains a nonterminal error")
+        # An observed tool block contradicts this route's no-tools contract.
+        # Inspect types only; never retain or echo tool inputs or thinking.
+        pending = [event]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, dict):
+                if isinstance(item.get("type"), str) and item["type"] in tool_types:
+                    raise ValueError("Claude Code review stream contains forbidden tool activity")
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+    if terminal is None:
+        raise ValueError("Claude Code review stream has no terminal result")
+    return terminal, terminal_bytes
 
 
 def image_media_type(data: bytes) -> str | None:
@@ -746,6 +834,7 @@ def main() -> int:
                 "automatic_retry_attempted": False,
                 "requested_model": args.model, "requested_effort": args.effort,
                 "input_format": args.input_format,
+                "output_format": "stream-json" if args.input_format == "stream-json" else "json",
                 "input_transport": "claude_content_blocks" if args.input_format == "stream-json" else "text",
                 "input_image_sha256s": image_hashes,
                 "prompt_sha256": sha256(packet), "request_sha256": sha256(packet),
@@ -785,10 +874,10 @@ def main() -> int:
                 metadata["status"] = "timeout"
                 raise ValueError("Claude Code deadline expired; delivery may have occurred")
             try:
-                response = json.loads(result["stdout"])
-            except (ValueError, UnicodeDecodeError):
+                response, terminal_bytes = decode_review_output(result["stdout"], args.input_format)
+            except ValueError:
                 metadata["status"] = "delivery_unknown"
-                raise ValueError("Claude Code returned invalid response JSON") from None
+                raise
             try:
                 text, receipt = capture_response(response, result["returncode"])
             except ValueError:
@@ -805,10 +894,11 @@ def main() -> int:
                     metadata.update(partial_answer_available=True, partial_answer_sha256=partial_hash)
                 raise ValueError("Claude Code returned an incomplete review; inspect its sanitized completion receipt") from None
             # Authentication/error output can contain login URLs or codes. Only
-            # retain a validated successful review object, never raw failure logs.
+            # retain a validated successful terminal object, never raw failure
+            # logs or the native route's verbose intermediate/thinking stream.
             metadata.update(receipt, status="response_received_incomplete",
                             model_review_completed=False, completion_reason="unknown")
-            (output / "response.raw.json").write_bytes(result["stdout"])
+            (output / "response.raw.json").write_bytes(terminal_bytes)
             (output / "result.txt").write_text(text + "\n", encoding="utf-8")
             metadata.update(receipt, status="completed")
             exit_code = 0

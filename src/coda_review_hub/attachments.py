@@ -142,7 +142,10 @@ def inline_packet(packet: str, snapshots: list[Snapshot]) -> str:
     blocks = []
     for item in snapshots:
         if Path(item.metadata["original_name"]).suffix not in TEXT_EXTENSIONS:
-            raise ValueError("Automated routes accept UTF-8 source/text files only; use an app handoff for binary/images")
+            raise ValueError(
+                "This inline text transport accepts UTF-8 source/text files only; "
+                "use Claude Code native image input for supported images or a supported app handoff for other media/documents"
+            )
         try:
             text = item.content.decode("utf-8-sig")
         except UnicodeError as exc:
@@ -188,14 +191,14 @@ def automated_packet(provider: str, packet: str, snapshots: list[Snapshot]) -> t
         try:
             return inline_packet(packet, snapshots), "utf8_json_in_prompt"
         except ValueError as exc:
-            raise ValueError(f"{provider}: {exc}. For native documents/images choose a supported app handoff; files were not sent") from exc
+            raise ValueError(f"{provider}: {exc}; files were not sent") from exc
     if len(snapshots) > MAX_FILES:
         raise ValueError("Select at most 16 exact files")
     text_files = [item for item in snapshots if item not in images]
     try:
         text = inline_packet(packet, text_files)
     except ValueError as exc:
-        raise ValueError("Claude Code native input currently supports PNG/JPEG/GIF/WebP plus UTF-8 source; use an app handoff for PDF/Office/other files") from exc
+        raise ValueError(f"claude-code: {exc}; files were not sent") from exc
     if len(text.encode("utf-8")) > MAX_PACKET_BYTES:
         raise ValueError("Text accompanying native files exceeds 128 KiB")
     content = [{"type": "text", "text": text}]

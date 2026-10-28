@@ -109,6 +109,9 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
                 'capabilities', 'record_review', 'review', 'record_lineage', 'comparison_report',
             })
             self.assertIn("attestation", tools["observe_usage"].description)
+            self.assertIn("fallback_observation", tools["select_model"].input_schema["properties"])
+            self.assertIn("selection_basis", tools["select_model"].input_schema["properties"])
+            self.assertIn("selection_policy", tools["record_models"].input_schema["properties"])
             response = await client.call_tool("routes")
             self.assertFalse(response.is_error)
             serialized = json.dumps(response.structured_content)
@@ -252,6 +255,27 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
                 "project": str(self.project), "job_ids": [job_id]})
             self.assertFalse(report.is_error)
             self.assertIn(turn_id, report.structured_content["content"])
+
+    async def test_standing_app_policy_blocks_prose_only_fallback_over_stdio(self) -> None:
+        async with Client(self.params, read_timeout_seconds=15) as client:
+            recorded = await client.call_tool("record_models", {
+                "provider": "chatgpt", "models": [{"id": "gpt-6", "efforts": ["Pro"]},
+                                                    {"id": "gpt-5.6-sol", "efforts": ["Pro"]}],
+                "evidence": "Synthetic Personal controls; user standing primary and fallback policy.",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "selection_policy": {"primary_model": "gpt-6", "primary_effort": "Pro",
+                                     "fallback_model": "gpt-5.6-sol", "fallback_effort": "Pro", "workspace": "Personal"}})
+            self.assertFalse(recorded.is_error)
+            fingerprint = recorded.structured_content["catalog"]["fingerprint"]
+            bad = await client.call_tool("select_model", {
+                "provider": "chatgpt", "model": "gpt-5.6-sol", "effort": "Pro",
+                "catalog_fingerprint": fingerprint, "evidence": "Generic menu said Locked and Usage limit reached."})
+            self.assertTrue(bad.is_error)
+            selected = await client.call_tool("select_model", {
+                "provider": "chatgpt", "model": "gpt-6", "effort": "Pro",
+                "catalog_fingerprint": fingerprint, "evidence": "Use the user's enabled standing primary preference."})
+            self.assertFalse(selected.is_error)
+            self.assertEqual(selected.structured_content["selection"]["selection_basis"], "primary")
 
     async def test_model_picker_requires_choice_and_changed_catalog_reconfirmation(self) -> None:
         state = self.root / "first-model-state"
