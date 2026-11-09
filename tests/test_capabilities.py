@@ -30,7 +30,7 @@ class RouteCapabilityTests(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(catalog)), catalog)
 
     def test_cli_routes_describe_only_their_implemented_file_transports(self):
-        for provider in ("claude-code", "grok", "antigravity"):
+        for provider in ("claude-code", "grok", "muse-code", "antigravity"):
             with self.subTest(provider=provider):
                 contract = route_capabilities(provider)
                 self.assertEqual(contract["transport"], "automated_cli")
@@ -43,7 +43,7 @@ class RouteCapabilityTests(unittest.TestCase):
                          ["image/gif", "image/jpeg", "image/png", "image/webp"])
 
     def test_handoffs_distinguish_local_staging_from_app_capabilities(self):
-        handoffs = set(PROVIDERS) - {"claude", "claude-code", "grok", "antigravity", "gemini-cli"}
+        handoffs = set(PROVIDERS) - {"claude", "claude-code", "grok", "muse-code", "antigravity", "gemini-cli"}
         for provider in handoffs:
             with self.subTest(provider=provider):
                 contract = route_capabilities(provider)

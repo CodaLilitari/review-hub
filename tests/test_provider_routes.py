@@ -27,8 +27,8 @@ class ProviderRouteTests(unittest.TestCase):
         listing = self.hub.routes()
         routes = {route["provider"]: route for route in listing["routes"]}
         self.assertEqual(set(routes), core.AUTO | set(core.RETIRED) | set(core.HANDOFF))
-        self.assertEqual(listing["route_counts"], {"automated": 3, "coordinator_handoff": 11, "retired": 1})
-        self.assertIn("3 automated", listing["limits"])
+        self.assertEqual(listing["route_counts"], {"automated": 4, "coordinator_handoff": 11, "retired": 1})
+        self.assertIn("4 automated", listing["limits"])
         for provider in NEW_HANDOFFS | {"gemini"}:
             with self.subTest(provider=provider):
                 self.assertEqual(routes[provider]["transport"], "coordinator_handoff")
@@ -140,48 +140,49 @@ class ProviderRouteTests(unittest.TestCase):
         self.assertEqual(old_style["observed_mode"], "")
         self.assertFalse(old_style["backend_model_verified"])
 
-    def test_three_provider_batch_runs_only_synthetic_helpers_and_replays_once(self):
-        # Each helper waits for all three startup receipts before finishing. This
-        # proves the real batch worker can run all three, without timing guesses.
-        barrier = '''    if "MODE:THREE" in packet:
+    def test_four_provider_batch_runs_only_synthetic_helpers_and_replays_once(self):
+        # Each helper waits for all four startup receipts before finishing. This
+        # proves the real batch worker can run all four, without timing guesses.
+        barrier = '''    if "MODE:FOUR" in packet:
         deadline = time.monotonic() + 8
-        while len(list(root.parent.glob("*/started.json"))) != 3:
+        while len(list(root.parent.glob("*/started.json"))) != 4:
             if time.monotonic() > deadline:
-                raise RuntimeError("Three synthetic helpers did not all start")
+                raise RuntimeError("Four synthetic helpers did not all start")
             time.sleep(0.02)
 '''
         self.fake.write_text(test_core.FAKE_HELPER.replace('    if "MODE:CHILD" in packet:',
                                                          barrier + '    if "MODE:CHILD" in packet:'), encoding="utf-8")
         self.pins["antigravity"] = {"path": str(self.fake), "model": "fixture-antigravity", "effort": "fixture-high"}
+        self.pins["muse-code"] = dict(self.pins["grok"])
         for pin in self.pins.values():
             pin["sha256"] = core.digest(self.fake.read_bytes())
         self.write_pins()
         source = self.project / "source.py"
         source.write_text("def average(values):\n    return sum(values) / len(values) if values else None\n", encoding="utf-8")
-        requests = [{"provider": provider, "prompt": "MODE:THREE synthetic review only.", "timeout": 12,
+        requests = [{"provider": provider, "prompt": "MODE:FOUR synthetic review only.", "timeout": 12,
                      "attachments": [str(source)]} for provider in sorted(core.AUTO)]
         for provider in core.AUTO:
             self.observe(provider)
-        batch = self.hub.submit(str(self.project), requests, "three-fixture-providers")
-        self.assertEqual(len(batch["jobs"]), 3)
+        batch = self.hub.submit(str(self.project), requests, "four-fixture-providers")
+        self.assertEqual(len(batch["jobs"]), 4)
         self.assertEqual({job["provider"] for job in batch["jobs"]}, core.AUTO)
         with patch.object(worker, "contain_worker", return_value=None), patch.object(sys, "argv", [
             "offline-worker", "--state-dir", str(self.hub.state), "--batch", batch["batch_id"],
         ]):
             self.assertEqual(worker.main(), 0)
         jobs = self.hub.jobs(str(self.project), batch["batch_id"])
-        self.assertEqual([job["state"] for job in jobs], ["returned"] * 3)
+        self.assertEqual([job["state"] for job in jobs], ["returned"] * 4)
         for job in jobs:
             directory = Path(job["evidence_directory"])
             self.assertEqual(len((directory / "launches.txt").read_text().splitlines()), 1)
             self.assertEqual(job["attachment_delivery"], "embedded_text_response_received")
             self.assertEqual(job["verified_response_models"], [self.pins[job["provider"]]["model"]])
             self.assertNotIn("PRIVATE_TEST_REASONING", json.dumps(self.hub.result(str(self.project), job["id"])))
-        replay = self.hub.submit(str(self.project), requests, "three-fixture-providers")
+        replay = self.hub.submit(str(self.project), requests, "four-fixture-providers")
         self.assertTrue(replay["reused"])
         self.assertEqual(replay["batch_id"], batch["batch_id"])
         self.launch.assert_called_once_with(batch["batch_id"])
-        with self.assertRaisesRegex(ValueError, "1..3"):
+        with self.assertRaisesRegex(ValueError, "1..4"):
             self.hub.submit(str(self.project), requests + [requests[0]], "too-many")
         with self.assertRaisesRegex(ValueError, "at most one request per provider"):
             self.hub.submit(str(self.project), [requests[0], requests[0]], "duplicate-provider")
@@ -190,11 +191,11 @@ class ProviderRouteTests(unittest.TestCase):
 class ProviderInterfaceTests(unittest.IsolatedAsyncioTestCase):
     setUp = test_mcp.MCPStdioTests.setUp
 
-    async def test_mcp_schemas_admit_three_automated_routes_and_optional_strict_labels(self):
+    async def test_mcp_schemas_admit_four_automated_routes_and_optional_strict_labels(self):
         async with Client(self.params, read_timeout_seconds=15) as client:
             tools = {tool.name: tool.model_dump(by_alias=True) for tool in (await client.list_tools()).tools}
             schema = tools["submit"]["inputSchema"]
-            self.assertEqual(schema["properties"]["requests"]["maxItems"], 3)
+            self.assertEqual(schema["properties"]["requests"]["maxItems"], 4)
             self.assertEqual(set(schema["$defs"]["ReviewRequest"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED) | set(core.LEGACY_AUTO))
             self.assertEqual(set(tools["observe_usage"]["inputSchema"]["properties"]["provider"]["enum"]), core.AUTO | set(core.RETIRED) | set(core.LEGACY_AUTO))
             receipt = tools["record_handoff_result"]["inputSchema"]

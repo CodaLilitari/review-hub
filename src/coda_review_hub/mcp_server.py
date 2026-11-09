@@ -58,7 +58,7 @@ class ReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     # Retired IDs reach core only to return a specific migration error; they
     # are never eligible for a new usage allowance or provider launch.
-    provider: Literal["claude-code", "claude", "grok", "antigravity", "gemini-cli"]
+    provider: Literal["claude-code", "claude", "grok", "muse-code", "antigravity", "gemini-cli"]
     prompt: str
     timeout: Annotated[int, Field(ge=1, le=3600)] = 900
     attachments: AttachmentPaths = Field(default_factory=list)
@@ -262,7 +262,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
     @server.tool(annotations=local_write, structured_output=True)
     def observe_usage(
-        provider: Literal["claude-code", "claude", "grok", "antigravity", "gemini-cli"],
+        provider: Literal["claude-code", "claude", "grok", "muse-code", "antigravity", "gemini-cli"],
         project: str,
         observed_at: str,
         evidence: str,
@@ -274,7 +274,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
         This is not a provider quota query or independent verification. Attest only what was
         actually observed, using a timestamp with timezone. Do not include account secrets.
-        Enabled automated routes are claude-code, grok, and antigravity (claude is a legacy CLI alias). gemini-cli is retained
+        Enabled automated routes are claude-code, grok, muse-code, and antigravity (claude is a legacy CLI alias). gemini-cli is retained
         in the schema solely to return an explicit retirement error, not to record new usage.
         A new send requires available included usage and disabled paid usage. max_jobs bounds
         how many dispatches may rely on this observation; it does not create provider quota.
@@ -295,7 +295,7 @@ def create_server(state_dir: str | Path | None = None) -> MCPServer:
 
         This sends the supplied prompts to selected providers after core preflight, using each
         route's explicitly confirmed model/effort after fresh account model discovery. No arbitrary commands or paid API fallback.
-        Enabled routes are claude-code, grok, and antigravity. Retired gemini-cli requests are rejected;
+        Enabled routes are claude-code, grok, muse-code, and antigravity. Retired gemini-cli requests are rejected;
         their existing records remain readable through jobs/result and are never redirected.
         Recent sourced usage attestations with included capacity and paid usage disabled are
         required. Reuse the idempotency key for the same logical request, then inspect jobs/results

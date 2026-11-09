@@ -10,5 +10,9 @@
   "antigravity": {
     "path": "C:/path/to/review-hub/scripts/antigravity_check.py",
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "muse-code": {
+    "path": "C:/path/to/review-hub/scripts/muse_code_check.py",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   }
 }

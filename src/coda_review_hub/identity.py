@@ -13,15 +13,15 @@ import uuid
 PROVIDERS = frozenset({
     "claude", "grok", "chatgpt", "gemini", "claude-cowork", "grok-bot",
     "microsoft-copilot", "github-copilot", "gemini-cli", "gemini-desktop",
-    "gemini-spark", "meta-ai", "meta-muse", "antigravity", "claude-code", "claude-desktop",
+    "gemini-spark", "meta-ai", "meta-muse", "antigravity", "claude-code", "claude-desktop", "muse-code",
 })
 # These names were valid user aliases before the additional routes existed.
 # Only reads of older profiles may preserve their former (old-route) targets.
-ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse", "antigravity", "claude-code", "claude-desktop"})
+ADDED_PROVIDERS = frozenset({"gemini-cli", "gemini-desktop", "gemini-spark", "meta-ai", "meta-muse", "antigravity", "claude-code", "claude-desktop", "muse-code"})
 # Antigravity was introduced after the v0.3 routes. A pre-existing alias with
 # this name may legitimately point to any earlier route, including Gemini CLI.
 LEGACY_ALIAS_TARGETS = {
-    name: (PROVIDERS - {"claude-code", "claude-desktop"} if name in {"claude-code", "claude-desktop"} else PROVIDERS - {"antigravity", "claude-code", "claude-desktop"} if name == "antigravity" else PROVIDERS - ADDED_PROVIDERS)
+    name: (PROVIDERS - {"muse-code"} if name == "muse-code" else PROVIDERS - {"muse-code", "claude-code", "claude-desktop"} if name in {"claude-code", "claude-desktop"} else PROVIDERS - {"muse-code", "antigravity", "claude-code", "claude-desktop"} if name == "antigravity" else PROVIDERS - ADDED_PROVIDERS)
     for name in ADDED_PROVIDERS
 }
 FIELDS = frozenset({"agent_name", "user_name", "collaborators", "aliases", "context_notes", "evidence"})

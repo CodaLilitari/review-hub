@@ -13,7 +13,7 @@ from .attachments import TEXT_EXTENSIONS, NATIVE_IMAGE_TYPES, MAX_NATIVE_IMAGE_B
 from .identity import PROVIDERS
 
 
-AUTOMATED_PROVIDERS = frozenset({"claude-code", "grok", "antigravity"})
+AUTOMATED_PROVIDERS = frozenset({"claude-code", "grok", "muse-code", "antigravity"})
 HANDOFF_PROVIDERS = frozenset({
     "claude-desktop", "chatgpt", "gemini", "gemini-desktop", "gemini-spark",
     "meta-ai", "meta-muse", "claude-cowork", "grok-bot",
