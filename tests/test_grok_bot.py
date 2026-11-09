@@ -104,7 +104,7 @@ class GrokBotTests(unittest.TestCase):
         self.configure_bot()
         listing = self.hub.routes()
         routes = {r["provider"]: r for r in listing["routes"]}
-        self.assertEqual(listing["route_counts"], {"automated": 3, "coordinator_handoff": 11, "retired": 1})
+        self.assertEqual(listing["route_counts"], {"automated": 4, "coordinator_handoff": 11, "retired": 1})
         self.assertNotIn("grokbot", routes)
         self.assert_bot_metadata(routes["grok-bot"])
         self.assertEqual(routes["grok-bot"]["transport"], "coordinator_handoff")

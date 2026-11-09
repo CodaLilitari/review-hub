@@ -39,7 +39,7 @@ class MetaMuseTests(unittest.TestCase):
         self.assertEqual(metadata['billing_enforcement'], 'coordinator_observation_only')
         self.assertIn('Muse Code is a separate', metadata['entitlement_note'])
         self.assertFalse(route['live_ready'])
-        self.assertEqual(listing['route_counts'], {'automated': 3, 'coordinator_handoff': 11, 'retired': 1})
+        self.assertEqual(listing['route_counts'], {'automated': 4, 'coordinator_handoff': 11, 'retired': 1})
         capability = route_capabilities('meta-muse')
         for key, value in metadata.items():
             self.assertEqual(capability[key], value)

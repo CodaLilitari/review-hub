@@ -26,7 +26,7 @@ A separate [mock ACP contract experiment](experimental/acpx/README.md) exercises
 
 **Repository access (2026-09-20):** GitHub currently requires sign-in to view this repository. Its public visibility setting does not establish anonymous access.
 
-Three automated provider slots, `claude-code`, `grok` and `antigravity`, can use **locally supplied, reviewed subscription helpers**. The former `gemini-cli` route is retired; historical records remain readable. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
+Four automated provider slots, `claude-code`, `grok`, `muse-code` and `antigravity`, can use **locally supplied, reviewed subscription helpers**. The former `gemini-cli` route is retired; historical records remain readable. No CLI route is ready merely because this package is installed. App handoffs work independently of those helpers: they prepare packets and record coordinator-observed replies without controlling a browser or desktop app.
 
 The production transport is local stdio MCP plus CLI wrappers. Authenticated ACP session management, provider-session resume, autonomous project editing, automatic image generation, and a persistent background service remain outside production scope. The separate mock ACP experiment establishes a local contract only. Provider capability is distinct from hub integration.
 
@@ -43,7 +43,7 @@ py -3 -m venv .venv
 
 The command entry points are `coda-review` and `coda-review-mcp`. Register the latter, or the environment's Python executable with `-m coda_review_hub.mcp_server`, with an MCP client that supports local stdio servers. Choose one private state directory outside the repository and use it consistently across clients. No HTTP listener is started.
 
-The repository ships `helpers.example.json` and generic helpers for Claude Code, Grok Build, and Antigravity; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified helper-source hashes; model/effort choices are saved separately after discovery. The example's zero hashes are placeholders, not usable pins. Read the [adapter contract](docs/adapter-contract.md) and [Antigravity setup and boundaries](docs/antigravity-v0.4.md) before enabling a helper.
+The repository ships `helpers.example.json` and generic helpers for Claude Code, Grok Build, Muse Code, and Antigravity; it contains no personal helper configuration or account data. Automated dispatch requires reviewed local helpers configured in ignored `helpers.local.json`, including verified helper-source hashes; model/effort choices are saved separately after discovery. The example's zero hashes are placeholders, not usable pins. Read the [adapter contract](docs/adapter-contract.md) and [Antigravity setup and boundaries](docs/antigravity-v0.4.md) before enabling a helper.
 
 ## Model setup and compatible updates (v0.5)
 
@@ -60,6 +60,10 @@ Antigravity has its own `antigravity` provider ID. The upgrade does not redirect
 A development diagnostic using the official Antigravity CLI 1.2.7 returned a nonsensitive synthetic response with `gemini-3.8-flash-high` selected and no observed tool calls. A bounded review through the guarded helper returned on September 25 with `gemini-3.1-pro-high` selected. These dated results do not establish continued entitlement, tool isolation, or a verified backend model identity. The current user selects from their own account catalog; examples do not establish availability or entitlement.
 
 The integration wraps the CLI through the hub's existing local MCP interface. It implements no Antigravity ACP sessions. Earlier ACP initialization experiments remain historical protocol probes. See [Antigravity migration, subscription checks, and validation boundaries](docs/antigravity-v0.4.md).
+
+## Muse Code bounded reviews
+
+The separate `muse-code` route uses the official native subscription login for bounded source/text review. It verifies a fresh included allowance and model catalog, forces contributor mode off, runs empty tools with read-only permissions, and keeps an ephemeral session with local audit receipts. It never inherits consumer Muse identity or entitlement. Configure your own reviewed helper pin and choose an exposed model/effort; no account or personal model choice is supplied. See [Muse Code setup and boundaries](docs/muse-code-cli.md). This local addition is not a new published release.
 
 ## Your ChatGPT reviewer
 
@@ -114,7 +118,7 @@ An explicit anonymous choice is supported. It allows neutral introductions witho
 | `record_lineage` | Record observed parent context without sending or resuming. |
 | `comparison_report` | Render selected local records as inert HTML or Markdown. |
 
-Inspect the current tool schemas or CLI help for argument details. A batch accepts at most one request per automated provider, allowing up to three providers to run concurrently. Active jobs for the same provider are serialized across projects sharing the state directory.
+Inspect the current tool schemas or CLI help for argument details. A batch accepts at most one request per automated provider, allowing up to four providers to run concurrently. Active jobs for the same provider are serialized across projects sharing the state directory.
 
 ## Subscription checks and delivery
 
